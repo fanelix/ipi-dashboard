@@ -429,14 +429,137 @@ def process_ipi_data(
     return processed_df
 
 
-def create_profile_plot(
+def create_profile_plot_dual(
     processed_df: pd.DataFrame,
-    selected_timestamps: list,
-    axis: str = 'A',
-    show_resultant: bool = False
+    selected_timestamps: list
 ) -> go.Figure:
     """
-    Create displacement profile plot (Displacement vs Depth).
+    Create side-by-side displacement profile plots for A-axis and B-axis.
+    
+    Args:
+        processed_df: Processed dataframe with displacement data
+        selected_timestamps: List of timestamps to display
+        
+    Returns:
+        Plotly figure with two subplots (A-axis and B-axis)
+    """
+    # Create subplots - 1 row, 2 columns
+    fig = make_subplots(
+        rows=1, cols=2,
+        subplot_titles=('<b>A-Axis Displacement</b>', '<b>B-Axis Displacement</b>'),
+        shared_yaxes=True,
+        horizontal_spacing=0.08
+    )
+    
+    colors = [
+        '#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
+        '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf'
+    ]
+    
+    for i, timestamp in enumerate(selected_timestamps):
+        mask = processed_df['timestamp'] == timestamp
+        data = processed_df[mask].sort_values('depth')
+        
+        color = colors[i % len(colors)]
+        ts_str = pd.Timestamp(timestamp).strftime('%Y-%m-%d %H:%M')
+        
+        # A-Axis plot (left)
+        fig.add_trace(
+            go.Scatter(
+                x=data['cum_disp_a'],
+                y=data['depth'],
+                mode='lines+markers',
+                name=f'{ts_str}',
+                line=dict(color=color, width=2),
+                marker=dict(size=6),
+                hovertemplate='<b>Depth:</b> %{y:.2f} m<br><b>A-Axis:</b> %{x:.3f} mm<extra></extra>',
+                legendgroup=f'group{i}',
+                showlegend=True
+            ),
+            row=1, col=1
+        )
+        
+        # B-Axis plot (right)
+        fig.add_trace(
+            go.Scatter(
+                x=data['cum_disp_b'],
+                y=data['depth'],
+                mode='lines+markers',
+                name=f'{ts_str}',
+                line=dict(color=color, width=2),
+                marker=dict(size=6),
+                hovertemplate='<b>Depth:</b> %{y:.2f} m<br><b>B-Axis:</b> %{x:.3f} mm<extra></extra>',
+                legendgroup=f'group{i}',
+                showlegend=False  # Only show legend once per timestamp
+            ),
+            row=1, col=2
+        )
+    
+    # Add zero reference lines to both subplots
+    fig.add_vline(x=0, line_dash="dash", line_color="gray", line_width=1, row=1, col=1)
+    fig.add_vline(x=0, line_dash="dash", line_color="gray", line_width=1, row=1, col=2)
+    
+    # Update layout
+    fig.update_layout(
+        title=dict(
+            text='<b>IPI Cumulative Displacement Profile</b>',
+            font=dict(size=20),
+            x=0.5,
+            xanchor='center'
+        ),
+        legend=dict(
+            orientation='h',
+            yanchor='bottom',
+            y=1.08,
+            xanchor='center',
+            x=0.5,
+            title=dict(text='Timestamp:', font=dict(size=12))
+        ),
+        template='plotly_white',
+        hovermode='closest',
+        height=650
+    )
+    
+    # Update x-axes
+    fig.update_xaxes(
+        title_text='Cumulative Displacement (mm)',
+        gridcolor='lightgray',
+        zeroline=True,
+        zerolinecolor='gray',
+        zerolinewidth=1,
+        row=1, col=1
+    )
+    fig.update_xaxes(
+        title_text='Cumulative Displacement (mm)',
+        gridcolor='lightgray',
+        zeroline=True,
+        zerolinecolor='gray',
+        zerolinewidth=1,
+        row=1, col=2
+    )
+    
+    # Update y-axes (reversed for depth)
+    fig.update_yaxes(
+        title_text='Depth (m)',
+        autorange='reversed',
+        gridcolor='lightgray',
+        row=1, col=1
+    )
+    fig.update_yaxes(
+        autorange='reversed',
+        gridcolor='lightgray',
+        row=1, col=2
+    )
+    
+    return fig
+
+
+def create_profile_plot_resultant(
+    processed_df: pd.DataFrame,
+    selected_timestamps: list
+) -> go.Figure:
+    """
+    Create resultant displacement profile plot.
     """
     fig = go.Figure()
     
@@ -452,38 +575,26 @@ def create_profile_plot(
         color = colors[i % len(colors)]
         ts_str = pd.Timestamp(timestamp).strftime('%Y-%m-%d %H:%M')
         
-        if show_resultant:
-            fig.add_trace(go.Scatter(
-                x=data['cum_disp_resultant'],
-                y=data['depth'],
-                mode='lines+markers',
-                name=f'Resultant - {ts_str}',
-                line=dict(color=color, width=2),
-                marker=dict(size=6),
-                hovertemplate='<b>Depth:</b> %{y:.2f} m<br><b>Displacement:</b> %{x:.3f} mm<extra></extra>'
-            ))
-        else:
-            disp_col = 'cum_disp_a' if axis == 'A' else 'cum_disp_b'
-            fig.add_trace(go.Scatter(
-                x=data[disp_col],
-                y=data['depth'],
-                mode='lines+markers',
-                name=f'{axis}-Axis - {ts_str}',
-                line=dict(color=color, width=2),
-                marker=dict(size=6),
-                hovertemplate='<b>Depth:</b> %{y:.2f} m<br><b>Displacement:</b> %{x:.3f} mm<extra></extra>'
-            ))
+        fig.add_trace(go.Scatter(
+            x=data['cum_disp_resultant'],
+            y=data['depth'],
+            mode='lines+markers',
+            name=f'{ts_str}',
+            line=dict(color=color, width=2),
+            marker=dict(size=6),
+            hovertemplate='<b>Depth:</b> %{y:.2f} m<br><b>Resultant:</b> %{x:.3f} mm<extra></extra>'
+        ))
     
     # Add zero reference line
     fig.add_vline(x=0, line_dash="dash", line_color="gray", line_width=1)
     
     fig.update_layout(
         title=dict(
-            text='<b>IPI Cumulative Displacement Profile</b>',
+            text='<b>IPI Resultant Displacement Profile</b>',
             font=dict(size=18)
         ),
         xaxis=dict(
-            title='Cumulative Displacement (mm)',
+            title='Resultant Displacement (mm)',
             gridcolor='lightgray',
             zeroline=True,
             zerolinecolor='gray',
@@ -491,7 +602,7 @@ def create_profile_plot(
         ),
         yaxis=dict(
             title='Depth (m)',
-            autorange='reversed',  # Depth increases downward
+            autorange='reversed',
             gridcolor='lightgray'
         ),
         legend=dict(
@@ -509,14 +620,117 @@ def create_profile_plot(
     return fig
 
 
-def create_trend_plot(
+def create_trend_plot_dual(
     processed_df: pd.DataFrame,
-    selected_depths: list,
-    axis: str = 'A',
-    show_resultant: bool = False
+    selected_depths: list
 ) -> go.Figure:
     """
-    Create displacement trend plot (Displacement vs Time).
+    Create side-by-side displacement trend plots for A-axis and B-axis.
+    """
+    fig = make_subplots(
+        rows=1, cols=2,
+        subplot_titles=('<b>A-Axis Time History</b>', '<b>B-Axis Time History</b>'),
+        shared_yaxes=False,
+        horizontal_spacing=0.08
+    )
+    
+    colors = [
+        '#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
+        '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf'
+    ]
+    
+    all_depths = sorted(processed_df['depth'].unique())
+    
+    for i, depth in enumerate(selected_depths):
+        closest_depth = min(all_depths, key=lambda x: abs(x - depth))
+        mask = processed_df['depth'] == closest_depth
+        data = processed_df[mask].sort_values('timestamp')
+        
+        color = colors[i % len(colors)]
+        
+        # A-Axis trend (left)
+        fig.add_trace(
+            go.Scatter(
+                x=data['timestamp'],
+                y=data['cum_disp_a'],
+                mode='lines+markers',
+                name=f'{closest_depth:.1f}m',
+                line=dict(color=color, width=2),
+                marker=dict(size=4),
+                hovertemplate='<b>Time:</b> %{x}<br><b>A-Axis:</b> %{y:.3f} mm<extra></extra>',
+                legendgroup=f'depth{i}',
+                showlegend=True
+            ),
+            row=1, col=1
+        )
+        
+        # B-Axis trend (right)
+        fig.add_trace(
+            go.Scatter(
+                x=data['timestamp'],
+                y=data['cum_disp_b'],
+                mode='lines+markers',
+                name=f'{closest_depth:.1f}m',
+                line=dict(color=color, width=2),
+                marker=dict(size=4),
+                hovertemplate='<b>Time:</b> %{x}<br><b>B-Axis:</b> %{y:.3f} mm<extra></extra>',
+                legendgroup=f'depth{i}',
+                showlegend=False
+            ),
+            row=1, col=2
+        )
+    
+    # Add zero reference lines
+    fig.add_hline(y=0, line_dash="dash", line_color="gray", line_width=1, row=1, col=1)
+    fig.add_hline(y=0, line_dash="dash", line_color="gray", line_width=1, row=1, col=2)
+    
+    fig.update_layout(
+        title=dict(
+            text='<b>IPI Displacement Time History</b>',
+            font=dict(size=20),
+            x=0.5,
+            xanchor='center'
+        ),
+        legend=dict(
+            orientation='h',
+            yanchor='bottom',
+            y=1.08,
+            xanchor='center',
+            x=0.5,
+            title=dict(text='Depth:', font=dict(size=12))
+        ),
+        template='plotly_white',
+        hovermode='x unified',
+        height=500
+    )
+    
+    # Update axes
+    fig.update_xaxes(title_text='Date/Time', gridcolor='lightgray', row=1, col=1)
+    fig.update_xaxes(title_text='Date/Time', gridcolor='lightgray', row=1, col=2)
+    fig.update_yaxes(
+        title_text='Cumulative Displacement (mm)',
+        gridcolor='lightgray',
+        zeroline=True,
+        zerolinecolor='gray',
+        row=1, col=1
+    )
+    fig.update_yaxes(
+        title_text='Cumulative Displacement (mm)',
+        gridcolor='lightgray',
+        zeroline=True,
+        zerolinecolor='gray',
+        row=1, col=2
+    )
+    
+    return fig
+
+
+def create_trend_plot_resultant(
+    processed_df: pd.DataFrame,
+    selected_depths: list
+) -> go.Figure:
+    """
+    Create resultant displacement trend plot.
     """
     fig = go.Figure()
     
@@ -528,60 +742,43 @@ def create_trend_plot(
     all_depths = sorted(processed_df['depth'].unique())
     
     for i, depth in enumerate(selected_depths):
-        # Find closest depth
         closest_depth = min(all_depths, key=lambda x: abs(x - depth))
         mask = processed_df['depth'] == closest_depth
         data = processed_df[mask].sort_values('timestamp')
         
         color = colors[i % len(colors)]
         
-        if show_resultant:
-            fig.add_trace(go.Scatter(
-                x=data['timestamp'],
-                y=data['cum_disp_resultant'],
-                mode='lines+markers',
-                name=f'Resultant @ {closest_depth:.1f}m',
-                line=dict(color=color, width=2),
-                marker=dict(size=4),
-                hovertemplate='<b>Time:</b> %{x}<br><b>Displacement:</b> %{y:.3f} mm<extra></extra>'
-            ))
-        else:
-            disp_col = 'cum_disp_a' if axis == 'A' else 'cum_disp_b'
-            fig.add_trace(go.Scatter(
-                x=data['timestamp'],
-                y=data[disp_col],
-                mode='lines+markers',
-                name=f'{axis}-Axis @ {closest_depth:.1f}m',
-                line=dict(color=color, width=2),
-                marker=dict(size=4),
-                hovertemplate='<b>Time:</b> %{x}<br><b>Displacement:</b> %{y:.3f} mm<extra></extra>'
-            ))
+        fig.add_trace(go.Scatter(
+            x=data['timestamp'],
+            y=data['cum_disp_resultant'],
+            mode='lines+markers',
+            name=f'{closest_depth:.1f}m',
+            line=dict(color=color, width=2),
+            marker=dict(size=4),
+            hovertemplate='<b>Time:</b> %{x}<br><b>Resultant:</b> %{y:.3f} mm<extra></extra>'
+        ))
     
-    # Add zero reference line
     fig.add_hline(y=0, line_dash="dash", line_color="gray", line_width=1)
     
     fig.update_layout(
         title=dict(
-            text='<b>IPI Displacement Time History</b>',
+            text='<b>IPI Resultant Displacement Time History</b>',
             font=dict(size=18)
         ),
-        xaxis=dict(
-            title='Date/Time',
-            gridcolor='lightgray'
-        ),
+        xaxis=dict(title='Date/Time', gridcolor='lightgray'),
         yaxis=dict(
-            title='Cumulative Displacement (mm)',
+            title='Resultant Displacement (mm)',
             gridcolor='lightgray',
             zeroline=True,
-            zerolinecolor='gray',
-            zerolinewidth=1
+            zerolinecolor='gray'
         ),
         legend=dict(
             orientation='h',
             yanchor='bottom',
             y=1.02,
             xanchor='left',
-            x=0
+            x=0,
+            title=dict(text='Depth:')
         ),
         template='plotly_white',
         hovermode='x unified',
@@ -756,13 +953,13 @@ def main():
         
         # Display options
         st.subheader("3. Display Options")
-        axis_select = st.radio(
-            "Axis Selection",
-            options=['A-Axis', 'B-Axis', 'Resultant'],
-            index=0
+        display_mode = st.radio(
+            "Display Mode",
+            options=['A-Axis & B-Axis (Side by Side)', 'Resultant Only'],
+            index=0,
+            help="Show both axes side-by-side or resultant displacement only"
         )
-        show_resultant = axis_select == 'Resultant'
-        axis = 'A' if axis_select == 'A-Axis' else 'B'
+        show_resultant = display_mode == 'Resultant Only'
     
     # Main content area
     if uploaded_file is None:
@@ -928,7 +1125,10 @@ def main():
                     selected_dates = [available_dates[-1]]
             
             if selected_dates:
-                fig_profile = create_profile_plot(processed_df, selected_dates, axis, show_resultant)
+                if show_resultant:
+                    fig_profile = create_profile_plot_resultant(processed_df, selected_dates)
+                else:
+                    fig_profile = create_profile_plot_dual(processed_df, selected_dates)
                 st.plotly_chart(fig_profile, use_container_width=True)
         
         with tab2:
@@ -946,7 +1146,10 @@ def main():
             )
             
             if selected_depths:
-                fig_trend = create_trend_plot(processed_df, selected_depths, axis, show_resultant)
+                if show_resultant:
+                    fig_trend = create_trend_plot_resultant(processed_df, selected_depths)
+                else:
+                    fig_trend = create_trend_plot_dual(processed_df, selected_depths)
                 st.plotly_chart(fig_trend, use_container_width=True)
         
         with tab3:
