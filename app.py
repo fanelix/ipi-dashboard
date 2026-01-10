@@ -1051,17 +1051,47 @@ def main():
             st.divider()
             st.subheader("4. Base Reading")
             
-            timestamps = df[detected_cols['timestamp']].unique()
-            base_options = {f"{i}: {pd.Timestamp(ts).strftime('%Y-%m-%d %H:%M')}": i 
-                          for i, ts in enumerate(timestamps[:50])}  # Limit to first 50
+            # Get all timestamps and create a proper selection
+            all_timestamps = df[detected_cols['timestamp']].sort_values().unique()
             
-            selected_base = st.selectbox(
-                "Select Base Reading",
-                options=list(base_options.keys()),
-                index=0,
-                help="Initial reading for correction (Current - Base)"
+            # Create a date selector first to narrow down options
+            available_dates = pd.to_datetime(all_timestamps).date
+            unique_dates = sorted(list(set(available_dates)))
+            
+            # Date picker for base reading
+            selected_date = st.date_input(
+                "Select Base Date",
+                value=unique_dates[0],
+                min_value=unique_dates[0],
+                max_value=unique_dates[-1],
+                help="Select the date for base reading"
             )
-            base_reading_idx = base_options[selected_base]
+            
+            # Filter timestamps for the selected date
+            timestamps_on_date = [ts for ts in all_timestamps 
+                                  if pd.Timestamp(ts).date() == selected_date]
+            
+            if timestamps_on_date:
+                # Show time options for selected date
+                time_options = {pd.Timestamp(ts).strftime('%H:%M:%S'): ts 
+                               for ts in timestamps_on_date}
+                
+                selected_time = st.selectbox(
+                    "Select Base Time",
+                    options=list(time_options.keys()),
+                    index=0,
+                    help="Select the time for base reading"
+                )
+                
+                # Get the actual timestamp and find its index
+                selected_timestamp = time_options[selected_time]
+                base_reading_idx = df[df[detected_cols['timestamp']] == selected_timestamp].index[0]
+                
+                # Show selected base reading info
+                st.caption(f"📌 Base: {pd.Timestamp(selected_timestamp).strftime('%Y-%m-%d %H:%M')}")
+            else:
+                st.warning("No data available for selected date")
+                base_reading_idx = 0
         
         # Process data
         with st.spinner("Processing IPI data..."):
