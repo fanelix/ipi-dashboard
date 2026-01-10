@@ -32,23 +32,29 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS for professional white theme
+# Custom CSS for professional white theme with readable text
 st.markdown("""
 <style>
-    /* Main app background */
+    /* Main app - ensure dark text on light background */
     .stApp {
-        background-color: #ffffff;
+        background-color: #f8fafc;
+        color: #1e293b;
+    }
+    
+    /* Force dark text color globally */
+    .stApp, .stApp p, .stApp span, .stApp label, .stApp div {
+        color: #1e293b !important;
     }
     
     /* Main header styling */
     .main-header {
         font-size: 2.2rem;
         font-weight: bold;
-        color: #1a365d;
+        color: #1e40af !important;
         text-align: center;
         margin-bottom: 0.5rem;
         padding: 1rem;
-        background: linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%);
+        background: linear-gradient(135deg, #dbeafe 0%, #bfdbfe 100%);
         border-radius: 8px;
         border-bottom: 3px solid #2563eb;
     }
@@ -56,33 +62,68 @@ st.markdown("""
     /* Sub header */
     .sub-header {
         font-size: 1.1rem;
-        color: #475569;
+        color: #475569 !important;
         text-align: center;
         margin-bottom: 1.5rem;
     }
     
     /* Metric cards */
     .metric-card {
-        background-color: #f8fafc;
+        background-color: #ffffff;
         padding: 1rem;
         border-radius: 8px;
         border-left: 4px solid #2563eb;
         box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        color: #1e293b !important;
     }
     
-    /* Sidebar styling */
+    /* Sidebar styling - dark sidebar for contrast */
     section[data-testid="stSidebar"] {
-        background-color: #f1f5f9;
+        background-color: #1e293b !important;
     }
     
-    section[data-testid="stSidebar"] .stMarkdown {
-        color: #1e293b;
+    section[data-testid="stSidebar"] * {
+        color: #f1f5f9 !important;
+    }
+    
+    section[data-testid="stSidebar"] .stMarkdown p,
+    section[data-testid="stSidebar"] .stMarkdown span,
+    section[data-testid="stSidebar"] .stMarkdown label,
+    section[data-testid="stSidebar"] h1,
+    section[data-testid="stSidebar"] h2,
+    section[data-testid="stSidebar"] h3 {
+        color: #f1f5f9 !important;
+    }
+    
+    /* Sidebar headers */
+    section[data-testid="stSidebar"] .stMarkdown h1,
+    section[data-testid="stSidebar"] .stMarkdown h2,
+    section[data-testid="stSidebar"] .stMarkdown h3 {
+        color: #60a5fa !important;
+    }
+    
+    /* Main content area text */
+    .main .block-container {
+        color: #1e293b !important;
+    }
+    
+    .main .block-container p,
+    .main .block-container span,
+    .main .block-container label,
+    .main .block-container li {
+        color: #374151 !important;
+    }
+    
+    .main .block-container h1,
+    .main .block-container h2,
+    .main .block-container h3 {
+        color: #1e40af !important;
     }
     
     /* Tab styling */
     .stTabs [data-baseweb="tab-list"] {
         gap: 8px;
-        background-color: #f1f5f9;
+        background-color: #e2e8f0;
         padding: 0.5rem;
         border-radius: 8px;
     }
@@ -90,53 +131,101 @@ st.markdown("""
     .stTabs [data-baseweb="tab"] {
         background-color: #ffffff;
         border-radius: 6px;
-        color: #1e293b;
+        color: #1e293b !important;
         font-weight: 500;
     }
     
     .stTabs [aria-selected="true"] {
-        background-color: #2563eb;
-        color: #ffffff;
+        background-color: #2563eb !important;
+        color: #ffffff !important;
     }
     
-    /* Data editor / table styling */
-    .stDataFrame {
+    /* Expander styling */
+    .streamlit-expanderHeader {
+        background-color: #e2e8f0 !important;
+        color: #1e293b !important;
+        border-radius: 6px;
+    }
+    
+    .streamlit-expanderHeader p {
+        color: #1e293b !important;
+        font-weight: 600;
+    }
+    
+    .streamlit-expanderContent {
+        background-color: #ffffff;
         border: 1px solid #e2e8f0;
-        border-radius: 8px;
+        color: #374151 !important;
     }
     
     /* Button styling */
     .stButton > button {
-        background-color: #2563eb;
-        color: white;
+        background-color: #2563eb !important;
+        color: #ffffff !important;
         border: none;
         border-radius: 6px;
         font-weight: 500;
     }
     
     .stButton > button:hover {
-        background-color: #1d4ed8;
-    }
-    
-    /* Expander styling */
-    .streamlit-expanderHeader {
-        background-color: #f8fafc;
-        border-radius: 6px;
+        background-color: #1d4ed8 !important;
+        color: #ffffff !important;
     }
     
     /* Selectbox and input styling */
-    .stSelectbox, .stNumberInput, .stDateInput {
-        color: #1e293b;
+    .stSelectbox > div > div,
+    .stNumberInput > div > div > input,
+    .stDateInput > div > div > input {
+        background-color: #ffffff !important;
+        color: #1e293b !important;
+        border: 1px solid #cbd5e1;
     }
     
-    /* Gauge length table header */
-    .gauge-table-header {
-        background-color: #2563eb;
-        color: white;
-        padding: 0.5rem;
-        border-radius: 4px 4px 0 0;
-        font-weight: bold;
-        text-align: center;
+    /* Multiselect */
+    .stMultiSelect > div > div {
+        background-color: #ffffff !important;
+        color: #1e293b !important;
+    }
+    
+    /* Info box */
+    .stAlert {
+        background-color: #dbeafe !important;
+        color: #1e40af !important;
+        border: 1px solid #93c5fd;
+    }
+    
+    /* Success box */
+    div[data-baseweb="notification"] {
+        color: #1e293b !important;
+    }
+    
+    /* Metric values */
+    [data-testid="stMetricValue"] {
+        color: #1e40af !important;
+    }
+    
+    [data-testid="stMetricLabel"] {
+        color: #475569 !important;
+    }
+    
+    /* Caption text */
+    .stCaption, small {
+        color: #64748b !important;
+    }
+    
+    /* Checkbox label */
+    .stCheckbox label span {
+        color: #374151 !important;
+    }
+    
+    /* Radio button labels */
+    .stRadio label span {
+        color: #374151 !important;
+    }
+    
+    /* Divider */
+    hr {
+        border-color: #cbd5e1 !important;
     }
 </style>
 """, unsafe_allow_html=True)
