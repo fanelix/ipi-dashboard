@@ -32,30 +32,111 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS for better styling
+# Custom CSS for professional white theme
 st.markdown("""
 <style>
+    /* Main app background */
+    .stApp {
+        background-color: #ffffff;
+    }
+    
+    /* Main header styling */
     .main-header {
-        font-size: 2.5rem;
+        font-size: 2.2rem;
         font-weight: bold;
-        color: #1f4e79;
+        color: #1a365d;
         text-align: center;
-        margin-bottom: 1rem;
-    }
-    .sub-header {
-        font-size: 1.2rem;
-        color: #666;
-        text-align: center;
-        margin-bottom: 2rem;
-    }
-    .metric-card {
-        background-color: #f0f2f6;
+        margin-bottom: 0.5rem;
         padding: 1rem;
-        border-radius: 0.5rem;
-        border-left: 4px solid #1f4e79;
+        background: linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%);
+        border-radius: 8px;
+        border-bottom: 3px solid #2563eb;
     }
-    .stAlert {
-        margin-top: 1rem;
+    
+    /* Sub header */
+    .sub-header {
+        font-size: 1.1rem;
+        color: #475569;
+        text-align: center;
+        margin-bottom: 1.5rem;
+    }
+    
+    /* Metric cards */
+    .metric-card {
+        background-color: #f8fafc;
+        padding: 1rem;
+        border-radius: 8px;
+        border-left: 4px solid #2563eb;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    }
+    
+    /* Sidebar styling */
+    section[data-testid="stSidebar"] {
+        background-color: #f1f5f9;
+    }
+    
+    section[data-testid="stSidebar"] .stMarkdown {
+        color: #1e293b;
+    }
+    
+    /* Tab styling */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 8px;
+        background-color: #f1f5f9;
+        padding: 0.5rem;
+        border-radius: 8px;
+    }
+    
+    .stTabs [data-baseweb="tab"] {
+        background-color: #ffffff;
+        border-radius: 6px;
+        color: #1e293b;
+        font-weight: 500;
+    }
+    
+    .stTabs [aria-selected="true"] {
+        background-color: #2563eb;
+        color: #ffffff;
+    }
+    
+    /* Data editor / table styling */
+    .stDataFrame {
+        border: 1px solid #e2e8f0;
+        border-radius: 8px;
+    }
+    
+    /* Button styling */
+    .stButton > button {
+        background-color: #2563eb;
+        color: white;
+        border: none;
+        border-radius: 6px;
+        font-weight: 500;
+    }
+    
+    .stButton > button:hover {
+        background-color: #1d4ed8;
+    }
+    
+    /* Expander styling */
+    .streamlit-expanderHeader {
+        background-color: #f8fafc;
+        border-radius: 6px;
+    }
+    
+    /* Selectbox and input styling */
+    .stSelectbox, .stNumberInput, .stDateInput {
+        color: #1e293b;
+    }
+    
+    /* Gauge length table header */
+    .gauge-table-header {
+        background-color: #2563eb;
+        color: white;
+        padding: 0.5rem;
+        border-radius: 4px 4px 0 0;
+        font-weight: bold;
+        text-align: center;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -326,7 +407,7 @@ def calculate_cumulative_displacement(incremental_displacements: np.ndarray, fro
 def process_ipi_data(
     df: pd.DataFrame,
     detected_cols: dict,
-    gauge_length: float,
+    gauge_lengths: np.ndarray,
     top_depth: float,
     use_raw_tilt: bool = True,
     base_reading_idx: int = 0
@@ -337,7 +418,7 @@ def process_ipi_data(
     Args:
         df: Raw dataframe
         detected_cols: Detected column mapping
-        gauge_length: Gauge length in meters
+        gauge_lengths: Array of gauge lengths per sensor in meters
         top_depth: Depth of topmost sensor in meters
         use_raw_tilt: If True, use tilt values; if False, use pre-calculated deflection
         base_reading_idx: Index of reading to use as base (0 = first reading)
@@ -348,8 +429,19 @@ def process_ipi_data(
     num_sensors = detected_cols['num_sensors']
     timestamps = df[detected_cols['timestamp']].values
     
-    # Generate depth array (sensor 1 = top, sensor N = bottom)
-    depths = np.array([top_depth + i * gauge_length for i in range(num_sensors)])
+    # Ensure gauge_lengths is the right size
+    if len(gauge_lengths) != num_sensors:
+        # Pad or truncate to match num_sensors
+        if len(gauge_lengths) < num_sensors:
+            gauge_lengths = np.concatenate([gauge_lengths, np.full(num_sensors - len(gauge_lengths), gauge_lengths[-1] if len(gauge_lengths) > 0 else 1.0)])
+        else:
+            gauge_lengths = gauge_lengths[:num_sensors]
+    
+    # Generate depth array based on cumulative gauge lengths (sensor 1 = top, sensor N = bottom)
+    depths = np.zeros(num_sensors)
+    depths[0] = top_depth
+    for i in range(1, num_sensors):
+        depths[i] = depths[i-1] + gauge_lengths[i-1]
     
     results = []
     
@@ -361,9 +453,11 @@ def process_ipi_data(
             tilt_a = np.array([row[col] for col in detected_cols['tilt_a']])
             tilt_b = np.array([row[col] for col in detected_cols['tilt_b']])
             
-            # Calculate incremental displacement
-            inc_a = np.array([calculate_incremental_displacement(t, gauge_length) for t in tilt_a])
-            inc_b = np.array([calculate_incremental_displacement(t, gauge_length) for t in tilt_b])
+            # Calculate incremental displacement with per-sensor gauge length
+            inc_a = np.array([calculate_incremental_displacement(tilt_a[i], gauge_lengths[i]) 
+                            for i in range(min(len(tilt_a), num_sensors))])
+            inc_b = np.array([calculate_incremental_displacement(tilt_b[i], gauge_lengths[i]) 
+                            for i in range(min(len(tilt_b), num_sensors))])
         elif detected_cols['def_a'] and detected_cols['def_b']:
             # Use pre-calculated deflection values
             inc_a = np.array([row[col] for col in detected_cols['def_a']])
@@ -383,6 +477,7 @@ def process_ipi_data(
                 'record_idx': idx,
                 'sensor_num': i + 1,
                 'depth': depths[i],
+                'gauge_length': gauge_lengths[i],
                 'inc_disp_a': inc_a[i] if i < len(inc_a) else np.nan,
                 'inc_disp_b': inc_b[i] if i < len(inc_b) else np.nan,
                 'temperature': temps[i] if i < len(temps) else np.nan
@@ -448,12 +543,21 @@ def create_profile_plot_dual(
         rows=1, cols=2,
         subplot_titles=('<b>A-Axis Displacement</b>', '<b>B-Axis Displacement</b>'),
         shared_yaxes=True,
-        horizontal_spacing=0.08
+        horizontal_spacing=0.10
     )
     
+    # High contrast colors for white background
     colors = [
-        '#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
-        '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf'
+        '#2563eb',  # Blue
+        '#dc2626',  # Red
+        '#16a34a',  # Green
+        '#9333ea',  # Purple
+        '#ea580c',  # Orange
+        '#0891b2',  # Cyan
+        '#c026d3',  # Magenta
+        '#4f46e5',  # Indigo
+        '#059669',  # Emerald
+        '#d97706',  # Amber
     ]
     
     for i, timestamp in enumerate(selected_timestamps):
@@ -470,8 +574,8 @@ def create_profile_plot_dual(
                 y=data['depth'],
                 mode='lines+markers',
                 name=f'{ts_str}',
-                line=dict(color=color, width=2),
-                marker=dict(size=6),
+                line=dict(color=color, width=2.5),
+                marker=dict(size=7, symbol='circle'),
                 hovertemplate='<b>Depth:</b> %{y:.2f} m<br><b>A-Axis:</b> %{x:.3f} mm<extra></extra>',
                 legendgroup=f'group{i}',
                 showlegend=True
@@ -486,24 +590,24 @@ def create_profile_plot_dual(
                 y=data['depth'],
                 mode='lines+markers',
                 name=f'{ts_str}',
-                line=dict(color=color, width=2),
-                marker=dict(size=6),
+                line=dict(color=color, width=2.5),
+                marker=dict(size=7, symbol='circle'),
                 hovertemplate='<b>Depth:</b> %{y:.2f} m<br><b>B-Axis:</b> %{x:.3f} mm<extra></extra>',
                 legendgroup=f'group{i}',
-                showlegend=False  # Only show legend once per timestamp
+                showlegend=False
             ),
             row=1, col=2
         )
     
     # Add zero reference lines to both subplots
-    fig.add_vline(x=0, line_dash="dash", line_color="gray", line_width=1, row=1, col=1)
-    fig.add_vline(x=0, line_dash="dash", line_color="gray", line_width=1, row=1, col=2)
+    fig.add_vline(x=0, line_dash="dash", line_color="#64748b", line_width=1.5, row=1, col=1)
+    fig.add_vline(x=0, line_dash="dash", line_color="#64748b", line_width=1.5, row=1, col=2)
     
-    # Update layout - legend at bottom, title at top with proper spacing
+    # Update layout - Professional white theme
     fig.update_layout(
         title=dict(
             text='<b>IPI Cumulative Displacement Profile</b>',
-            font=dict(size=18),
+            font=dict(size=18, color='#1e293b', family='Arial, sans-serif'),
             x=0.5,
             xanchor='center',
             y=0.95,
@@ -515,51 +619,52 @@ def create_profile_plot_dual(
             y=-0.12,
             xanchor='center',
             x=0.5,
-            title=dict(text='<b>Timestamp:</b> ', font=dict(size=11)),
-            bgcolor='rgba(255,255,255,0.9)',
-            bordercolor='lightgray',
+            title=dict(text='<b>Timestamp:</b> ', font=dict(size=11, color='#374151')),
+            bgcolor='#f8fafc',
+            bordercolor='#cbd5e1',
             borderwidth=1,
-            font=dict(size=10)
+            font=dict(size=10, color='#1e293b')
         ),
-        template='plotly_white',
+        plot_bgcolor='#ffffff',
+        paper_bgcolor='#ffffff',
         hovermode='closest',
         height=650,
-        margin=dict(t=60, b=80, l=60, r=40)
+        margin=dict(t=60, b=80, l=70, r=50)
     )
     
-    # Update subplot titles position (move them down slightly)
+    # Update subplot titles
     for annotation in fig['layout']['annotations']:
         annotation['y'] = 1.02
-        annotation['font'] = dict(size=14)
+        annotation['font'] = dict(size=14, color='#1e293b', family='Arial, sans-serif')
     
-    # Update x-axes
-    fig.update_xaxes(
-        title_text='Cumulative Displacement (mm)',
-        gridcolor='lightgray',
+    # Update x-axes with professional styling
+    axis_style = dict(
+        title_font=dict(size=12, color='#374151', family='Arial, sans-serif'),
+        tickfont=dict(size=10, color='#4b5563'),
+        gridcolor='#e5e7eb',
+        gridwidth=1,
         zeroline=True,
-        zerolinecolor='gray',
-        zerolinewidth=1,
-        row=1, col=1
+        zerolinecolor='#9ca3af',
+        zerolinewidth=1.5,
+        linecolor='#d1d5db',
+        linewidth=1,
+        showline=True,
+        mirror=True
     )
-    fig.update_xaxes(
-        title_text='Cumulative Displacement (mm)',
-        gridcolor='lightgray',
-        zeroline=True,
-        zerolinecolor='gray',
-        zerolinewidth=1,
-        row=1, col=2
-    )
+    
+    fig.update_xaxes(title_text='Cumulative Displacement (mm)', **axis_style, row=1, col=1)
+    fig.update_xaxes(title_text='Cumulative Displacement (mm)', **axis_style, row=1, col=2)
     
     # Update y-axes (reversed for depth)
     fig.update_yaxes(
         title_text='Depth (m)',
         autorange='reversed',
-        gridcolor='lightgray',
+        **axis_style,
         row=1, col=1
     )
     fig.update_yaxes(
         autorange='reversed',
-        gridcolor='lightgray',
+        **axis_style,
         row=1, col=2
     )
     
@@ -643,12 +748,21 @@ def create_trend_plot_dual(
         rows=1, cols=2,
         subplot_titles=('<b>A-Axis Time History</b>', '<b>B-Axis Time History</b>'),
         shared_yaxes=False,
-        horizontal_spacing=0.08
+        horizontal_spacing=0.10
     )
     
+    # High contrast colors for white background
     colors = [
-        '#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
-        '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf'
+        '#2563eb',  # Blue
+        '#dc2626',  # Red
+        '#16a34a',  # Green
+        '#9333ea',  # Purple
+        '#ea580c',  # Orange
+        '#0891b2',  # Cyan
+        '#c026d3',  # Magenta
+        '#4f46e5',  # Indigo
+        '#059669',  # Emerald
+        '#d97706',  # Amber
     ]
     
     all_depths = sorted(processed_df['depth'].unique())
@@ -693,13 +807,14 @@ def create_trend_plot_dual(
         )
     
     # Add zero reference lines
-    fig.add_hline(y=0, line_dash="dash", line_color="gray", line_width=1, row=1, col=1)
-    fig.add_hline(y=0, line_dash="dash", line_color="gray", line_width=1, row=1, col=2)
+    fig.add_hline(y=0, line_dash="dash", line_color="#64748b", line_width=1.5, row=1, col=1)
+    fig.add_hline(y=0, line_dash="dash", line_color="#64748b", line_width=1.5, row=1, col=2)
     
+    # Professional white theme layout
     fig.update_layout(
         title=dict(
             text='<b>IPI Displacement Time History</b>',
-            font=dict(size=18),
+            font=dict(size=18, color='#1e293b', family='Arial, sans-serif'),
             x=0.5,
             xanchor='center',
             y=0.95,
@@ -711,38 +826,52 @@ def create_trend_plot_dual(
             y=-0.15,
             xanchor='center',
             x=0.5,
-            title=dict(text='<b>Depth:</b> ', font=dict(size=11)),
-            bgcolor='rgba(255,255,255,0.9)',
-            bordercolor='lightgray',
+            title=dict(text='<b>Depth:</b> ', font=dict(size=11, color='#374151')),
+            bgcolor='#f8fafc',
+            bordercolor='#cbd5e1',
             borderwidth=1,
-            font=dict(size=10)
+            font=dict(size=10, color='#1e293b')
         ),
-        template='plotly_white',
+        plot_bgcolor='#ffffff',
+        paper_bgcolor='#ffffff',
         hovermode='x unified',
         height=500,
-        margin=dict(t=60, b=80, l=60, r=40)
+        margin=dict(t=60, b=80, l=70, r=50)
     )
     
-    # Update subplot titles position
+    # Update subplot titles
     for annotation in fig['layout']['annotations']:
         annotation['y'] = 1.02
-        annotation['font'] = dict(size=14)
+        annotation['font'] = dict(size=14, color='#1e293b', family='Arial, sans-serif')
     
-    # Update axes
-    fig.update_xaxes(title_text='Date/Time', gridcolor='lightgray', row=1, col=1)
-    fig.update_xaxes(title_text='Date/Time', gridcolor='lightgray', row=1, col=2)
+    # Professional axis styling
+    axis_style = dict(
+        title_font=dict(size=12, color='#374151', family='Arial, sans-serif'),
+        tickfont=dict(size=10, color='#4b5563'),
+        gridcolor='#e5e7eb',
+        gridwidth=1,
+        linecolor='#d1d5db',
+        linewidth=1,
+        showline=True,
+        mirror=True
+    )
+    
+    fig.update_xaxes(title_text='Date/Time', **axis_style, row=1, col=1)
+    fig.update_xaxes(title_text='Date/Time', **axis_style, row=1, col=2)
     fig.update_yaxes(
         title_text='Cumulative Displacement (mm)',
-        gridcolor='lightgray',
         zeroline=True,
-        zerolinecolor='gray',
+        zerolinecolor='#9ca3af',
+        zerolinewidth=1.5,
+        **axis_style,
         row=1, col=1
     )
     fig.update_yaxes(
         title_text='Cumulative Displacement (mm)',
-        gridcolor='lightgray',
         zeroline=True,
-        zerolinecolor='gray',
+        zerolinecolor='#9ca3af',
+        zerolinewidth=1.5,
+        **axis_style,
         row=1, col=2
     )
     
@@ -947,14 +1076,6 @@ def main():
         
         # Sensor configuration
         st.subheader("2. Sensor Parameters")
-        gauge_length = st.number_input(
-            "Gauge Length (m)",
-            min_value=0.1,
-            max_value=5.0,
-            value=1.0,
-            step=0.1,
-            help="Distance between sensor nodes (default: 1.0m)"
-        )
         
         top_depth = st.number_input(
             "Top Sensor Depth (m)",
@@ -1070,6 +1191,66 @@ def main():
                     date_range = f"{df[detected_cols['timestamp']].min().strftime('%Y-%m-%d')} to {df[detected_cols['timestamp']].max().strftime('%Y-%m-%d')}"
                     st.metric("Date Range", date_range)
         
+        # Gauge Length Configuration
+        st.subheader("📏 Gauge Length Configuration")
+        
+        num_sensors = detected_cols['num_sensors']
+        
+        # Initialize gauge lengths in session state if not exists
+        if 'gauge_lengths' not in st.session_state or len(st.session_state.gauge_lengths) != num_sensors:
+            st.session_state.gauge_lengths = [3.0] * num_sensors  # Default 3m for all sensors
+        
+        # Quick set options
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            if st.button("Set All 1m", use_container_width=True):
+                st.session_state.gauge_lengths = [1.0] * num_sensors
+                st.rerun()
+        with col2:
+            if st.button("Set All 2m", use_container_width=True):
+                st.session_state.gauge_lengths = [2.0] * num_sensors
+                st.rerun()
+        with col3:
+            if st.button("Set All 3m", use_container_width=True):
+                st.session_state.gauge_lengths = [3.0] * num_sensors
+                st.rerun()
+        with col4:
+            show_gauge_config = st.checkbox("Edit Individual", value=False)
+        
+        # Show individual gauge length configuration
+        if show_gauge_config:
+            with st.expander("⚙️ Per-Sensor Gauge Length (click to expand)", expanded=True):
+                st.caption("Configure gauge length for each sensor (1m, 2m, or 3m)")
+                
+                # Create columns for sensor configuration
+                cols_per_row = 5
+                for row_start in range(0, num_sensors, cols_per_row):
+                    cols = st.columns(cols_per_row)
+                    for i, col in enumerate(cols):
+                        sensor_idx = row_start + i
+                        if sensor_idx < num_sensors:
+                            with col:
+                                new_val = st.selectbox(
+                                    f"S{sensor_idx + 1}",
+                                    options=[1.0, 2.0, 3.0],
+                                    index=[1.0, 2.0, 3.0].index(st.session_state.gauge_lengths[sensor_idx]) if st.session_state.gauge_lengths[sensor_idx] in [1.0, 2.0, 3.0] else 2,
+                                    key=f"gauge_{sensor_idx}",
+                                    format_func=lambda x: f"{int(x)}m"
+                                )
+                                st.session_state.gauge_lengths[sensor_idx] = new_val
+        
+        # Display current gauge configuration summary
+        gauge_summary = {}
+        for gl in st.session_state.gauge_lengths:
+            gauge_summary[f"{int(gl)}m"] = gauge_summary.get(f"{int(gl)}m", 0) + 1
+        summary_text = " | ".join([f"{k}: {v} sensors" for k, v in sorted(gauge_summary.items())])
+        st.caption(f"📊 Current config: {summary_text}")
+        
+        # Convert to numpy array for processing
+        gauge_lengths = np.array(st.session_state.gauge_lengths)
+        
+        st.divider()
+        
         # Base reading selection
         with st.sidebar:
             st.divider()
@@ -1122,7 +1303,7 @@ def main():
             processed_df = process_ipi_data(
                 df,
                 detected_cols,
-                gauge_length,
+                gauge_lengths,
                 top_depth,
                 use_raw_tilt,
                 base_reading_idx
