@@ -61,14 +61,81 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
+def clean_and_split_lines(file_content: str) -> list:
+    """
+    Clean file content and handle concatenated lines (common data corruption).
+    
+    Some Campbell Scientific files have lines that are concatenated together
+    (missing newline characters). This function detects and splits them.
+    
+    Returns:
+        List of cleaned lines
+    """
+    # Replace Windows line endings and handle carriage returns
+    content = file_content.replace('\r\n', '\n').replace('\r', '\n')
+    
+    # Split by newlines first
+    lines = content.split('\n')
+    
+    cleaned_lines = []
+    
+    for line in lines:
+        # Check if line contains multiple timestamps (concatenated records)
+        # Pattern: ends with number/quote, immediately followed by quote + timestamp
+        # Example: ...26.0625"2025-12-05 07:00:00",...
+        
+        # Find all timestamp patterns in the line
+        timestamp_pattern = r'"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})"'
+        timestamps = list(re.finditer(timestamp_pattern, line))
+        
+        if len(timestamps) > 1:
+            # Multiple timestamps found - need to split
+            # Split at each timestamp (except the first one)
+            last_end = 0
+            for i, match in enumerate(timestamps):
+                if i == 0:
+                    continue  # Skip first timestamp
+                
+                # Find the split point (just before the quote of the timestamp)
+                split_point = match.start()
+                
+                # Extract the segment
+                segment = line[last_end:split_point].strip()
+                if segment:
+                    cleaned_lines.append(segment)
+                
+                last_end = split_point
+            
+            # Add the last segment
+            if last_end < len(line):
+                segment = line[last_end:].strip()
+                if segment:
+                    cleaned_lines.append(segment)
+        else:
+            # Normal line
+            if line.strip():
+                cleaned_lines.append(line.strip())
+    
+    return cleaned_lines
+
+
 def parse_toa5_file(file_content: str) -> tuple[pd.DataFrame, dict]:
     """
-    Parse Campbell Scientific TOA5 format file.
+    Parse Campbell Scientific TOA5 format file with robust error handling.
+    
+    Handles:
+    - Concatenated lines (missing newlines)
+    - Inconsistent field counts
+    - Various data corruption issues
     
     Returns:
         Tuple of (DataFrame, metadata_dict)
     """
-    lines = file_content.strip().split('\n')
+    # Clean and split lines properly
+    lines = clean_and_split_lines(file_content)
+    
+    if len(lines) < 5:
+        raise ValueError("File too short - expected at least 5 lines (4 header + 1 data)")
     
     # Parse header line (line 0)
     header_info = lines[0].replace('"', '').split(',')
@@ -83,18 +150,75 @@ def parse_toa5_file(file_content: str) -> tuple[pd.DataFrame, dict]:
     
     # Column names (line 1)
     columns = [col.replace('"', '') for col in lines[1].split(',')]
+    expected_fields = len(columns)
     
-    # Units (line 2) and processing info (line 3) - skip for data parsing
+    # Data starts from line 4 (skip lines 2 and 3 which are units and processing)
+    data_lines = lines[4:]
     
-    # Data starts from line 4
-    data_lines = '\n'.join(lines[4:])
+    # Parse each line individually, handling field count mismatches
+    valid_rows = []
+    skipped_rows = 0
     
-    df = pd.read_csv(io.StringIO(data_lines), names=columns, na_values=['NAN', 'NaN', 'nan', ''])
+    for i, line in enumerate(data_lines):
+        try:
+            # Parse the line
+            # Handle quoted fields properly
+            fields = []
+            in_quote = False
+            current_field = ""
+            
+            for char in line:
+                if char == '"':
+                    in_quote = not in_quote
+                elif char == ',' and not in_quote:
+                    fields.append(current_field.strip().strip('"'))
+                    current_field = ""
+                else:
+                    current_field += char
+            
+            # Don't forget the last field
+            fields.append(current_field.strip().strip('"'))
+            
+            # Check field count
+            if len(fields) == expected_fields:
+                valid_rows.append(fields)
+            elif len(fields) > expected_fields:
+                # Too many fields - truncate to expected
+                valid_rows.append(fields[:expected_fields])
+                skipped_rows += 1
+            else:
+                # Too few fields - pad with NaN
+                fields.extend([np.nan] * (expected_fields - len(fields)))
+                valid_rows.append(fields)
+                skipped_rows += 1
+                
+        except Exception as e:
+            skipped_rows += 1
+            continue
+    
+    if not valid_rows:
+        raise ValueError("No valid data rows found in file")
+    
+    # Create DataFrame
+    df = pd.DataFrame(valid_rows, columns=columns)
+    
+    # Convert numeric columns
+    for col in df.columns:
+        if col not in ['TIMESTAMP']:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
     
     # Parse timestamp
     if 'TIMESTAMP' in df.columns:
         df['TIMESTAMP'] = pd.to_datetime(df['TIMESTAMP'], errors='coerce')
         df = df.dropna(subset=['TIMESTAMP'])
+    
+    # Sort by timestamp
+    if 'TIMESTAMP' in df.columns:
+        df = df.sort_values('TIMESTAMP').reset_index(drop=True)
+    
+    # Store skipped rows info in metadata
+    metadata['skipped_rows'] = skipped_rows
+    metadata['total_rows'] = len(valid_rows)
     
     return df, metadata
 
@@ -684,9 +808,25 @@ def main():
         if file_content.startswith('"TOA5"'):
             df, metadata = parse_toa5_file(file_content)
             st.success(f"✅ TOA5 file loaded: **{metadata['station_name']}** ({metadata['table_name']})")
+            
+            # Show data quality warning if rows were skipped
+            if metadata.get('skipped_rows', 0) > 0:
+                st.warning(f"⚠️ Data Quality: {metadata['skipped_rows']} rows had issues and were corrected/skipped. Total valid rows: {metadata['total_rows']}")
         else:
-            # Generic CSV parsing
-            df = pd.read_csv(io.StringIO(file_content), na_values=['NAN', 'NaN', 'nan', ''])
+            # Generic CSV parsing with error handling
+            try:
+                df = pd.read_csv(
+                    io.StringIO(file_content), 
+                    na_values=['NAN', 'NaN', 'nan', ''],
+                    on_bad_lines='skip'  # Skip malformed lines
+                )
+            except TypeError:
+                # Older pandas version
+                df = pd.read_csv(
+                    io.StringIO(file_content), 
+                    na_values=['NAN', 'NaN', 'nan', ''],
+                    error_bad_lines=False
+                )
             metadata = {'station_name': 'Unknown', 'table_name': 'Generic CSV'}
             st.success("✅ CSV file loaded successfully")
         
