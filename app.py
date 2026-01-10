@@ -499,26 +499,38 @@ def create_profile_plot_dual(
     fig.add_vline(x=0, line_dash="dash", line_color="gray", line_width=1, row=1, col=1)
     fig.add_vline(x=0, line_dash="dash", line_color="gray", line_width=1, row=1, col=2)
     
-    # Update layout
+    # Update layout - legend at bottom, title at top with proper spacing
     fig.update_layout(
         title=dict(
             text='<b>IPI Cumulative Displacement Profile</b>',
-            font=dict(size=20),
+            font=dict(size=18),
             x=0.5,
-            xanchor='center'
+            xanchor='center',
+            y=0.95,
+            yanchor='top'
         ),
         legend=dict(
             orientation='h',
-            yanchor='bottom',
-            y=1.08,
+            yanchor='top',
+            y=-0.12,
             xanchor='center',
             x=0.5,
-            title=dict(text='Timestamp:', font=dict(size=12))
+            title=dict(text='<b>Timestamp:</b> ', font=dict(size=11)),
+            bgcolor='rgba(255,255,255,0.9)',
+            bordercolor='lightgray',
+            borderwidth=1,
+            font=dict(size=10)
         ),
         template='plotly_white',
         hovermode='closest',
-        height=650
+        height=650,
+        margin=dict(t=60, b=80, l=60, r=40)
     )
+    
+    # Update subplot titles position (move them down slightly)
+    for annotation in fig['layout']['annotations']:
+        annotation['y'] = 1.02
+        annotation['font'] = dict(size=14)
     
     # Update x-axes
     fig.update_xaxes(
@@ -687,22 +699,34 @@ def create_trend_plot_dual(
     fig.update_layout(
         title=dict(
             text='<b>IPI Displacement Time History</b>',
-            font=dict(size=20),
+            font=dict(size=18),
             x=0.5,
-            xanchor='center'
+            xanchor='center',
+            y=0.95,
+            yanchor='top'
         ),
         legend=dict(
             orientation='h',
-            yanchor='bottom',
-            y=1.08,
+            yanchor='top',
+            y=-0.15,
             xanchor='center',
             x=0.5,
-            title=dict(text='Depth:', font=dict(size=12))
+            title=dict(text='<b>Depth:</b> ', font=dict(size=11)),
+            bgcolor='rgba(255,255,255,0.9)',
+            bordercolor='lightgray',
+            borderwidth=1,
+            font=dict(size=10)
         ),
         template='plotly_white',
         hovermode='x unified',
-        height=500
+        height=500,
+        margin=dict(t=60, b=80, l=60, r=40)
     )
+    
+    # Update subplot titles position
+    for annotation in fig['layout']['annotations']:
+        annotation['y'] = 1.02
+        annotation['font'] = dict(size=14)
     
     # Update axes
     fig.update_xaxes(title_text='Date/Time', gridcolor='lightgray', row=1, col=1)
