@@ -304,15 +304,43 @@ def clean_and_split_lines(file_content: str) -> list:
     return cleaned_lines
 
 
+def parse_csv_line(line: str) -> list:
+    """
+    Parse a CSV line properly handling quoted fields with commas.
+    This is critical for column names like "Tilt_A(1,1)" which contain commas.
+    """
+    fields = []
+    current_field = ""
+    in_quotes = False
+    
+    for char in line:
+        if char == '"':
+            in_quotes = not in_quotes
+        elif char == ',' and not in_quotes:
+            fields.append(current_field.strip().strip('"'))
+            current_field = ""
+        else:
+            current_field += char
+    
+    fields.append(current_field.strip().strip('"'))
+    return fields
+
+
 def parse_toa5_file(file_content: str) -> Tuple[pd.DataFrame, Dict]:
-    """Parse Campbell Scientific TOA5 format file."""
+    """
+    Parse Campbell Scientific TOA5 format file.
+    
+    Supports both column naming formats:
+    - Old: IPIS_Tilt_A(N) with simple (N) indexing
+    - New: Tilt_A(1,N) with 2D array (1,N) indexing
+    """
     lines = clean_and_split_lines(file_content)
     
     if len(lines) < 5:
         raise ValueError("File appears to be too short or corrupted")
     
-    # Parse header
-    header_info = lines[0].replace('"', '').split(',')
+    # Parse header using proper CSV parsing (commas inside quotes)
+    header_info = parse_csv_line(lines[0])
     metadata = {
         'format': header_info[0] if len(header_info) > 0 else 'Unknown',
         'station_name': header_info[1] if len(header_info) > 1 else 'Unknown',
@@ -322,8 +350,9 @@ def parse_toa5_file(file_content: str) -> Tuple[pd.DataFrame, Dict]:
         'table_name': header_info[7] if len(header_info) > 7 else 'Unknown'
     }
     
-    # Parse column names
-    columns = [col.replace('"', '') for col in lines[1].split(',')]
+    # Parse column names using proper CSV parsing
+    # This correctly handles columns like "Tilt_A(1,1)" which contain commas
+    columns = parse_csv_line(lines[1])
     expected_fields = len(columns)
     
     # Parse data (skip header rows)
@@ -333,19 +362,7 @@ def parse_toa5_file(file_content: str) -> Tuple[pd.DataFrame, Dict]:
     
     for line in data_lines:
         try:
-            fields = []
-            in_quote = False
-            current_field = ""
-            
-            for char in line:
-                if char == '"':
-                    in_quote = not in_quote
-                elif char == ',' and not in_quote:
-                    fields.append(current_field.strip().strip('"'))
-                    current_field = ""
-                else:
-                    current_field += char
-            fields.append(current_field.strip().strip('"'))
+            fields = parse_csv_line(line)
             
             if len(fields) == expected_fields:
                 valid_rows.append(fields)
@@ -383,7 +400,17 @@ def parse_toa5_file(file_content: str) -> Tuple[pd.DataFrame, Dict]:
 
 
 def detect_ipi_columns(df: pd.DataFrame) -> Dict:
-    """Auto-detect IPI sensor columns in dataframe."""
+    """
+    Auto-detect IPI sensor columns in dataframe.
+    
+    Supports two column naming formats:
+    
+    Format 1 (Old): IPIS_Tilt_A(N), IPIS_Tilt_B(N), IPIS_Therm(N), IPIS_Def_A(N), IPIS_Def_B(N)
+                    where N = 1, 2, 3, ...
+    
+    Format 2 (New): Tilt_A(1,N), Tilt_B(1,N), IPI_Temp(1,N), IPI_Def_A(1,N), IPI_Def_B(1,N)
+                    where N = 1, 2, 3, ... (uses 2D array notation with first index = 1)
+    """
     columns = df.columns.tolist()
     
     detected = {
@@ -395,32 +422,72 @@ def detect_ipi_columns(df: pd.DataFrame) -> Dict:
         'therm': [],
         'battery': None,
         'panel_temp': None,
-        'num_sensors': 0
+        'int_temp': None,
+        'num_sensors': 0,
+        'format_type': 'unknown'  # Track which format was detected
     }
+    
+    # Detect format type first
+    has_2d_notation = any('(1,' in col for col in columns)
+    detected['format_type'] = 'new_2d' if has_2d_notation else 'old_1d'
     
     for col in columns:
         col_lower = col.lower()
+        
+        # Timestamp detection
         if 'timestamp' in col_lower or col_lower == 'ts':
             detected['timestamp'] = col
-        elif 'battv' in col_lower:
+        
+        # Battery voltage
+        elif 'batt' in col_lower and 'volt' in col_lower:
             detected['battery'] = col
+        elif col_lower == 'battv':
+            detected['battery'] = col
+        
+        # Panel/Internal temperature
         elif 'ptemp' in col_lower:
             detected['panel_temp'] = col
-        elif 'tilt_a' in col_lower:
+        elif col_lower == 'int_temp':
+            detected['int_temp'] = col
+        
+        # Tilt A columns - both formats
+        # Old: IPIS_Tilt_A(N) or tilt_a(N)
+        # New: Tilt_A(1,N)
+        elif 'tilt_a' in col_lower or 'tilt_a(' in col_lower:
             detected['tilt_a'].append(col)
-        elif 'tilt_b' in col_lower:
+        
+        # Tilt B columns
+        elif 'tilt_b' in col_lower or 'tilt_b(' in col_lower:
             detected['tilt_b'].append(col)
-        elif 'def_a' in col_lower:
+        
+        # Deflection A columns
+        # Old: IPIS_Def_A(N) or def_a(N)
+        # New: IPI_Def_A(1,N)
+        elif 'def_a' in col_lower or 'ipi_def_a' in col_lower:
             detected['def_a'].append(col)
-        elif 'def_b' in col_lower:
+        
+        # Deflection B columns
+        elif 'def_b' in col_lower or 'ipi_def_b' in col_lower:
             detected['def_b'].append(col)
-        elif 'therm' in col_lower and 'ptemp' not in col_lower:
+        
+        # Temperature columns
+        # Old: IPIS_Therm(N) or therm(N)
+        # New: IPI_Temp(1,N)
+        elif ('therm' in col_lower and 'ptemp' not in col_lower) or 'ipi_temp' in col_lower:
             detected['therm'].append(col)
     
-    # Sort columns by sensor number
+    # Sort columns by sensor number - handle both formats
     def extract_number(col_name):
-        match = re.search(r'\((\d+)\)', col_name)
-        return int(match.group(1)) if match else 0
+        """Extract sensor number from column name, handling both formats."""
+        # Try 2D notation first: (1,N)
+        match_2d = re.search(r'\(1,(\d+)\)', col_name)
+        if match_2d:
+            return int(match_2d.group(1))
+        # Fall back to 1D notation: (N)
+        match_1d = re.search(r'\((\d+)\)', col_name)
+        if match_1d:
+            return int(match_1d.group(1))
+        return 0
     
     for key in ['tilt_a', 'tilt_b', 'def_a', 'def_b', 'therm']:
         detected[key] = sorted(detected[key], key=extract_number)
@@ -887,7 +954,9 @@ def add_ipis_point(file_content: str, filename: str) -> Tuple[bool, str]:
         # Store point
         st.session_state.ipis_points[point_id] = point
         
-        return True, f"Successfully loaded: {point_name} ({num_sensors} sensors, {len(df)} records)"
+        # Format info for user
+        format_desc = "2D array format" if detected_cols.get('format_type') == 'new_2d' else "standard format"
+        return True, f"Successfully loaded: {point_name} ({num_sensors} sensors, {len(df)} records, {format_desc})"
         
     except Exception as e:
         return False, f"Error parsing {filename}: {str(e)}"
