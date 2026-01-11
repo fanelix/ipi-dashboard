@@ -35,6 +35,9 @@ GAUGE_LENGTH_OPTIONS = [1.0, 2.0, 3.0]
 DEFAULT_GAUGE_LENGTH = 3.0
 DEFAULT_TOP_DEPTH = 1.0
 
+# Default axis range settings
+DEFAULT_AXIS_RANGE = {'auto': True, 'min': -50.0, 'max': 50.0}
+
 # High contrast colors for data series
 CHART_COLORS = [
     '#2563eb', '#dc2626', '#16a34a', '#9333ea', '#ea580c',
@@ -633,8 +636,17 @@ def process_ipis_point(point: IPISPoint, use_raw_tilt: bool = True) -> pd.DataFr
 # =============================================================================
 # VISUALIZATION FUNCTIONS
 # =============================================================================
-def create_profile_plot_single(processed_df: pd.DataFrame, selected_timestamps: list, point_name: str) -> go.Figure:
-    """Create profile plot for a single IPIS point."""
+def create_profile_plot_single(processed_df: pd.DataFrame, selected_timestamps: list, point_name: str,
+                                axis_range: Optional[Dict] = None) -> go.Figure:
+    """
+    Create profile plot for a single IPIS point.
+    
+    Args:
+        processed_df: Processed dataframe with displacement data
+        selected_timestamps: List of timestamps to plot
+        point_name: Name of the IPIS point
+        axis_range: Optional dict with 'auto', 'min', 'max' for X-axis range
+    """
     fig = make_subplots(
         rows=1, cols=2,
         subplot_titles=('<b>A-Axis Displacement</b>', '<b>B-Axis Displacement</b>'),
@@ -704,16 +716,30 @@ def create_profile_plot_single(processed_df: pd.DataFrame, selected_timestamps: 
         linewidth=1, showline=True, mirror=True
     )
     
-    fig.update_xaxes(title_text='Displacement (mm)', zeroline=True, zerolinecolor='#9ca3af', **axis_style, row=1, col=1)
-    fig.update_xaxes(title_text='Displacement (mm)', zeroline=True, zerolinecolor='#9ca3af', **axis_style, row=1, col=2)
+    # Apply axis range if specified (not auto)
+    x_axis_config = dict(title_text='Displacement (mm)', zeroline=True, zerolinecolor='#9ca3af', **axis_style)
+    if axis_range and not axis_range.get('auto', True):
+        x_axis_config['range'] = [axis_range['min'], axis_range['max']]
+    
+    fig.update_xaxes(**x_axis_config, row=1, col=1)
+    fig.update_xaxes(**x_axis_config, row=1, col=2)
     fig.update_yaxes(title_text='Depth (m)', autorange='reversed', **axis_style, row=1, col=1)
     fig.update_yaxes(autorange='reversed', **axis_style, row=1, col=2)
     
     return fig
 
 
-def create_profile_plot_comparison(points_data: Dict[str, pd.DataFrame], selected_timestamp, axis: str = 'A') -> go.Figure:
-    """Create comparative profile plot across multiple IPIS points."""
+def create_profile_plot_comparison(points_data: Dict[str, pd.DataFrame], selected_timestamp, axis: str = 'A',
+                                    axis_range: Optional[Dict] = None) -> go.Figure:
+    """
+    Create comparative profile plot across multiple IPIS points.
+    
+    Args:
+        points_data: Dict mapping point names to their processed dataframes
+        selected_timestamp: Timestamp to compare
+        axis: 'A' or 'B' axis
+        axis_range: Optional dict with 'auto', 'min', 'max' for X-axis range
+    """
     fig = go.Figure()
     
     disp_col = 'cum_disp_a' if axis == 'A' else 'cum_disp_b'
@@ -739,17 +765,22 @@ def create_profile_plot_comparison(points_data: Dict[str, pd.DataFrame], selecte
     
     ts_str = pd.Timestamp(selected_timestamp).strftime('%Y-%m-%d %H:%M')
     
+    # Build x-axis config
+    x_axis_config = dict(
+        title='Cumulative Displacement (mm)',
+        gridcolor='#e5e7eb', linecolor='#d1d5db',
+        zeroline=True, zerolinecolor='#9ca3af'
+    )
+    if axis_range and not axis_range.get('auto', True):
+        x_axis_config['range'] = [axis_range['min'], axis_range['max']]
+    
     fig.update_layout(
         title=dict(
             text=f'<b>Multi-Point {axis}-Axis Comparison</b><br><sub>{ts_str}</sub>',
             font=dict(size=16, color='#1e293b'),
             x=0.5, xanchor='center'
         ),
-        xaxis=dict(
-            title='Cumulative Displacement (mm)',
-            gridcolor='#e5e7eb', linecolor='#d1d5db',
-            zeroline=True, zerolinecolor='#9ca3af'
-        ),
+        xaxis=x_axis_config,
         yaxis=dict(
             title='Depth (m)', autorange='reversed',
             gridcolor='#e5e7eb', linecolor='#d1d5db'
@@ -904,6 +935,13 @@ def init_session_state():
         st.session_state.ipis_points = {}  # Dict[point_id, IPISPoint]
     if 'processed_data' not in st.session_state:
         st.session_state.processed_data = {}  # Dict[point_id, pd.DataFrame]
+    # Axis range settings for profile plots
+    if 'axis_range' not in st.session_state:
+        st.session_state.axis_range = {
+            'auto': True,
+            'min': -50.0,
+            'max': 50.0
+        }
 
 
 def add_ipis_point(file_content: str, filename: str) -> Tuple[bool, str]:
@@ -1043,25 +1081,120 @@ def main():
         
         st.divider()
         
+        # Axis Range Configuration
+        st.subheader("3. Plot Axis Settings")
+        
+        auto_range = st.checkbox(
+            "Auto X-Axis Range",
+            value=st.session_state.axis_range.get('auto', True),
+            help="Automatically scale X-axis based on data"
+        )
+        st.session_state.axis_range['auto'] = auto_range
+        
+        if not auto_range:
+            col_min, col_max = st.columns(2)
+            with col_min:
+                axis_min = st.number_input(
+                    "X-Axis Min (mm)",
+                    value=float(st.session_state.axis_range.get('min', -50.0)),
+                    step=5.0,
+                    key="axis_min"
+                )
+                st.session_state.axis_range['min'] = axis_min
+            with col_max:
+                axis_max = st.number_input(
+                    "X-Axis Max (mm)",
+                    value=float(st.session_state.axis_range.get('max', 50.0)),
+                    step=5.0,
+                    key="axis_max"
+                )
+                st.session_state.axis_range['max'] = axis_max
+            
+            # Quick presets
+            st.caption("Quick Presets:")
+            preset_cols = st.columns(4)
+            with preset_cols[0]:
+                if st.button("±25", key="preset_25", use_container_width=True):
+                    st.session_state.axis_range['min'] = -25.0
+                    st.session_state.axis_range['max'] = 25.0
+                    st.rerun()
+            with preset_cols[1]:
+                if st.button("±50", key="preset_50", use_container_width=True):
+                    st.session_state.axis_range['min'] = -50.0
+                    st.session_state.axis_range['max'] = 50.0
+                    st.rerun()
+            with preset_cols[2]:
+                if st.button("±100", key="preset_100", use_container_width=True):
+                    st.session_state.axis_range['min'] = -100.0
+                    st.session_state.axis_range['max'] = 100.0
+                    st.rerun()
+            with preset_cols[3]:
+                if st.button("±200", key="preset_200", use_container_width=True):
+                    st.session_state.axis_range['min'] = -200.0
+                    st.session_state.axis_range['max'] = 200.0
+                    st.rerun()
+        
+        st.divider()
+        
         # Loaded points management
-        st.subheader("3. Loaded Points")
+        st.subheader("4. Loaded Points")
         
         if st.session_state.ipis_points:
             for point_id, point in list(st.session_state.ipis_points.items()):
                 with st.expander(f"📍 {point.name}", expanded=False):
-                    st.caption(f"Sensors: {point.num_sensors} | Records: {len(point.raw_df)}")
+                    # Show format type and basic info
+                    format_type = point.detected_cols.get('format_type', 'unknown')
+                    format_badge = "🔷 2D Array" if format_type == 'new_2d' else "🔶 Standard"
+                    st.caption(f"{format_badge} | Sensors: {point.num_sensors} | Records: {len(point.raw_df)}")
                     
-                    # Gauge length quick set
+                    # Current gauge length display
+                    current_gauge = point.gauge_lengths[0] if len(point.gauge_lengths) > 0 else DEFAULT_GAUGE_LENGTH
+                    st.markdown(f"**Current Gauge Length:** `{current_gauge:.1f} m`")
+                    
+                    # Gauge length selection with selectbox for precise control
+                    st.markdown("**Set Gauge Length:**")
+                    gauge_selection = st.selectbox(
+                        "Gauge Length",
+                        options=GAUGE_LENGTH_OPTIONS,
+                        index=GAUGE_LENGTH_OPTIONS.index(current_gauge) if current_gauge in GAUGE_LENGTH_OPTIONS else 2,
+                        format_func=lambda x: f"{x:.0f} m",
+                        key=f"gauge_select_{point_id}",
+                        label_visibility="collapsed"
+                    )
+                    
+                    # Apply gauge length if changed
+                    if gauge_selection != current_gauge:
+                        point.gauge_lengths = np.full(point.num_sensors, gauge_selection)
+                        # Clear processed data to force recalculation
+                        if point_id in st.session_state.processed_data:
+                            del st.session_state.processed_data[point_id]
+                    
+                    # Quick set buttons (alternative)
+                    st.caption("Quick Set:")
                     col1, col2, col3 = st.columns(3)
                     with col1:
-                        if st.button("1m", key=f"g1_{point_id}", use_container_width=True):
+                        if st.button("1m", key=f"g1_{point_id}", use_container_width=True, 
+                                    type="primary" if current_gauge == 1.0 else "secondary"):
                             point.gauge_lengths = np.full(point.num_sensors, 1.0)
+                            if point_id in st.session_state.processed_data:
+                                del st.session_state.processed_data[point_id]
+                            st.rerun()
                     with col2:
-                        if st.button("2m", key=f"g2_{point_id}", use_container_width=True):
+                        if st.button("2m", key=f"g2_{point_id}", use_container_width=True,
+                                    type="primary" if current_gauge == 2.0 else "secondary"):
                             point.gauge_lengths = np.full(point.num_sensors, 2.0)
+                            if point_id in st.session_state.processed_data:
+                                del st.session_state.processed_data[point_id]
+                            st.rerun()
                     with col3:
-                        if st.button("3m", key=f"g3_{point_id}", use_container_width=True):
+                        if st.button("3m", key=f"g3_{point_id}", use_container_width=True,
+                                    type="primary" if current_gauge == 3.0 else "secondary"):
                             point.gauge_lengths = np.full(point.num_sensors, 3.0)
+                            if point_id in st.session_state.processed_data:
+                                del st.session_state.processed_data[point_id]
+                            st.rerun()
+                    
+                    st.divider()
                     
                     # Top depth
                     point.top_depth = st.number_input(
@@ -1101,17 +1234,24 @@ def main():
             
             - **Multiple IPIS Points**: Upload up to 20 different monitoring points
             - **Independent Processing**: Each point has its own gauge length and base reading settings
+            - **Per-IPIS Gauge Length**: Configure 1m, 2m, or 3m gauge lengths individually per dataset
+            - **Configurable Axis Range**: Set custom X-axis limits for displacement plots
+            - **Dual Format Support**: Supports both standard and 2D array column formats
             - **Comparative Analysis**: Compare displacement profiles across multiple points
             - **Auto-detection**: Automatically detects Campbell Scientific TOA5 format
             
             ### How to Use
             
             1. Upload one or more `.DAT` files using the sidebar
-            2. Configure gauge length and base reading for each point
-            3. Use the tabs to view individual or comparative plots
+            2. Configure gauge length (1m, 2m, 3m) for each IPIS point
+            3. Adjust X-axis range settings if needed (auto or manual)
+            4. Set base reading and top depth for each point
+            5. Use the tabs to view individual or comparative plots
             
-            ### Supported File Format
+            ### Supported File Formats
             - Campbell Scientific TOA5 (.dat, .csv)
+            - Standard format: `IPIS_Tilt_A(N)` column naming
+            - 2D Array format: `Tilt_A(1,N)` column naming
             """)
         return
     
@@ -1189,7 +1329,8 @@ def main():
                 selected_timestamps = [available_timestamps[-1]]
         
         if selected_timestamps:
-            fig = create_profile_plot_single(df, selected_timestamps, point.name)
+            fig = create_profile_plot_single(df, selected_timestamps, point.name, 
+                                             axis_range=st.session_state.axis_range)
             st.plotly_chart(fig, use_container_width=True)
     
     # Tab 2: Comparative Profile Plot
@@ -1220,7 +1361,8 @@ def main():
                 key="compare_axis"
             )
             
-            fig = create_profile_plot_comparison(selected_points_data, compare_timestamp, axis_choice)
+            fig = create_profile_plot_comparison(selected_points_data, compare_timestamp, axis_choice,
+                                                  axis_range=st.session_state.axis_range)
             st.plotly_chart(fig, use_container_width=True)
     
     # Tab 3: Individual Trend Plot
