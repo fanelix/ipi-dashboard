@@ -329,13 +329,39 @@ def parse_csv_line(line: str) -> list:
     return fields
 
 
+def parse_wrapped_column_header(line: str) -> list:
+    """
+    Parse a column header line that may be wrapped in outer quotes with 
+    double-escaped inner quotes.
+    
+    Format 3 (Newest): The entire header row is wrapped in outer quotes
+    with inner quotes doubled for escaping (e.g., Tilt_A columns).
+    
+    This function detects this format and properly parses it.
+    """
+    line = line.strip()
+    
+    # Check if line is wrapped in outer quotes (Format 3)
+    if line.startswith('"') and line.endswith('"') and '""' in line:
+        # Remove outer quotes
+        inner = line[1:-1]
+        # Replace doubled quotes with single quotes
+        inner = inner.replace('""', '"')
+        # Now parse normally
+        return parse_csv_line(inner)
+    else:
+        # Standard format - parse directly
+        return parse_csv_line(line)
+
+
 def parse_toa5_file(file_content: str) -> Tuple[pd.DataFrame, Dict]:
     """
     Parse Campbell Scientific TOA5 format file.
     
-    Supports both column naming formats:
-    - Old: IPIS_Tilt_A(N) with simple (N) indexing
-    - New: Tilt_A(1,N) with 2D array (1,N) indexing
+    Supports multiple column naming formats:
+    - Format 1 (Old): IPIS_Tilt_A(N) with simple (N) indexing
+    - Format 2 (New): Tilt_A(1,N) with 2D array indexing, standard CSV
+    - Format 3 (Newest): Tilt_A(1,N) with wrapped-quote header line
     """
     lines = clean_and_split_lines(file_content)
     
@@ -353,9 +379,9 @@ def parse_toa5_file(file_content: str) -> Tuple[pd.DataFrame, Dict]:
         'table_name': header_info[7] if len(header_info) > 7 else 'Unknown'
     }
     
-    # Parse column names using proper CSV parsing
+    # Parse column names - handle both standard and wrapped-quote formats
     # This correctly handles columns like "Tilt_A(1,1)" which contain commas
-    columns = parse_csv_line(lines[1])
+    columns = parse_wrapped_column_header(lines[1])
     expected_fields = len(columns)
     
     # Parse data (skip header rows)
@@ -1240,15 +1266,18 @@ def main():
                         key=f"td_{point_id}"
                     )
                     
-                    # Base reading
+                    # Base reading selection - show ALL available timestamps
                     timestamps = point.raw_df[point.detected_cols['timestamp']].sort_values().unique()
-                    base_options = [pd.Timestamp(ts).strftime('%Y-%m-%d %H:%M') for ts in timestamps[:100]]
+                    base_options = [pd.Timestamp(ts).strftime('%Y-%m-%d %H:%M') for ts in timestamps]
+                    
+                    st.markdown(f"**Base Reading** ({len(base_options)} timestamps available)")
                     
                     selected_base = st.selectbox(
                         "Base Reading",
                         options=base_options,
                         index=0,
-                        key=f"base_{point_id}"
+                        key=f"base_{point_id}",
+                        label_visibility="collapsed"
                     )
                     point.base_reading_idx = base_options.index(selected_base)
                     
