@@ -1147,52 +1147,87 @@ def main():
                     format_badge = "🔷 2D Array" if format_type == 'new_2d' else "🔶 Standard"
                     st.caption(f"{format_badge} | Sensors: {point.num_sensors} | Records: {len(point.raw_df)}")
                     
-                    # Current gauge length display
-                    current_gauge = point.gauge_lengths[0] if len(point.gauge_lengths) > 0 else DEFAULT_GAUGE_LENGTH
-                    st.markdown(f"**Current Gauge Length:** `{current_gauge:.1f} m`")
+                    # =============================================
+                    # GAUGE LENGTH CONFIGURATION
+                    # =============================================
+                    st.markdown("**⚙️ Gauge Length Configuration**")
                     
-                    # Gauge length selection with selectbox for precise control
-                    st.markdown("**Set Gauge Length:**")
-                    gauge_selection = st.selectbox(
-                        "Gauge Length",
-                        options=GAUGE_LENGTH_OPTIONS,
-                        index=GAUGE_LENGTH_OPTIONS.index(current_gauge) if current_gauge in GAUGE_LENGTH_OPTIONS else 2,
-                        format_func=lambda x: f"{x:.0f} m",
-                        key=f"gauge_select_{point_id}",
-                        label_visibility="collapsed"
-                    )
+                    # Show current gauge lengths summary
+                    unique_gauges = np.unique(point.gauge_lengths)
+                    if len(unique_gauges) == 1:
+                        gauge_summary = f"All sensors: `{unique_gauges[0]:.0f} m`"
+                    else:
+                        gauge_summary = f"Mixed: {', '.join([f'{g:.0f}m' for g in unique_gauges])}"
+                    st.caption(f"Current: {gauge_summary}")
                     
-                    # Apply gauge length if changed
-                    if gauge_selection != current_gauge:
-                        point.gauge_lengths = np.full(point.num_sensors, gauge_selection)
-                        # Clear processed data to force recalculation
-                        if point_id in st.session_state.processed_data:
-                            del st.session_state.processed_data[point_id]
-                    
-                    # Quick set buttons (alternative)
-                    st.caption("Quick Set:")
-                    col1, col2, col3 = st.columns(3)
-                    with col1:
-                        if st.button("1m", key=f"g1_{point_id}", use_container_width=True, 
-                                    type="primary" if current_gauge == 1.0 else "secondary"):
+                    # Quick set ALL sensors buttons
+                    st.markdown("**Set ALL Sensors:**")
+                    qcol1, qcol2, qcol3 = st.columns(3)
+                    with qcol1:
+                        if st.button("All 1m", key=f"all1_{point_id}", use_container_width=True):
                             point.gauge_lengths = np.full(point.num_sensors, 1.0)
                             if point_id in st.session_state.processed_data:
                                 del st.session_state.processed_data[point_id]
                             st.rerun()
-                    with col2:
-                        if st.button("2m", key=f"g2_{point_id}", use_container_width=True,
-                                    type="primary" if current_gauge == 2.0 else "secondary"):
+                    with qcol2:
+                        if st.button("All 2m", key=f"all2_{point_id}", use_container_width=True):
                             point.gauge_lengths = np.full(point.num_sensors, 2.0)
                             if point_id in st.session_state.processed_data:
                                 del st.session_state.processed_data[point_id]
                             st.rerun()
-                    with col3:
-                        if st.button("3m", key=f"g3_{point_id}", use_container_width=True,
-                                    type="primary" if current_gauge == 3.0 else "secondary"):
+                    with qcol3:
+                        if st.button("All 3m", key=f"all3_{point_id}", use_container_width=True):
                             point.gauge_lengths = np.full(point.num_sensors, 3.0)
                             if point_id in st.session_state.processed_data:
                                 del st.session_state.processed_data[point_id]
                             st.rerun()
+                    
+                    # Per-sensor gauge length configuration
+                    st.markdown("**Per-Sensor Gauge Length:**")
+                    
+                    # Calculate depths for display
+                    depths = np.zeros(point.num_sensors)
+                    depths[0] = point.top_depth
+                    for i in range(1, point.num_sensors):
+                        depths[i] = depths[i-1] + point.gauge_lengths[i-1]
+                    
+                    # Create a compact grid for sensor gauge lengths
+                    # Display in rows of 4 sensors each
+                    sensors_per_row = 4
+                    num_rows = (point.num_sensors + sensors_per_row - 1) // sensors_per_row
+                    
+                    gauge_changed = False
+                    new_gauge_lengths = point.gauge_lengths.copy()
+                    
+                    for row_idx in range(num_rows):
+                        cols = st.columns(sensors_per_row)
+                        for col_idx, col in enumerate(cols):
+                            sensor_idx = row_idx * sensors_per_row + col_idx
+                            if sensor_idx < point.num_sensors:
+                                with col:
+                                    current_gauge = point.gauge_lengths[sensor_idx]
+                                    # Compact sensor label with depth
+                                    sensor_label = f"S{sensor_idx + 1}"
+                                    depth_label = f"({depths[sensor_idx]:.1f}m)"
+                                    
+                                    new_gauge = st.selectbox(
+                                        f"{sensor_label} {depth_label}",
+                                        options=GAUGE_LENGTH_OPTIONS,
+                                        index=GAUGE_LENGTH_OPTIONS.index(current_gauge) if current_gauge in GAUGE_LENGTH_OPTIONS else 2,
+                                        format_func=lambda x: f"{int(x)}m",
+                                        key=f"gs_{point_id}_{sensor_idx}",
+                                        label_visibility="visible"
+                                    )
+                                    
+                                    if new_gauge != current_gauge:
+                                        new_gauge_lengths[sensor_idx] = new_gauge
+                                        gauge_changed = True
+                    
+                    # Apply changes if any gauge was modified
+                    if gauge_changed:
+                        point.gauge_lengths = new_gauge_lengths
+                        if point_id in st.session_state.processed_data:
+                            del st.session_state.processed_data[point_id]
                     
                     st.divider()
                     
