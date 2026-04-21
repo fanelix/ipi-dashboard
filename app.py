@@ -267,6 +267,14 @@ class IPISPoint:
     detected_cols: Dict = field(default_factory=dict)
     processed_df: Optional[pd.DataFrame] = None
     color: str = '#2563eb'
+    # --- NaN handling (Feature 1) ---
+    # Mode controls how NaN-contaminated data is treated during processing.
+    #   'keep'             -> do nothing (legacy behavior; nancumsum treats NaN as 0)
+    #   'exclude_rows'     -> drop whole timestamps that contain any NaN tilt/def value
+    #   'exclude_sensors'  -> drop specific sensor channels across all timestamps
+    nan_exclusion_mode: str = 'keep'
+    excluded_sensors: List[int] = field(default_factory=list)  # 1-indexed sensor numbers
+    nan_report: Dict = field(default_factory=dict)  # populated by scan_nan_in_raw()
     
     def __post_init__(self):
         """Initialize after dataclass creation."""
@@ -536,6 +544,99 @@ def generate_point_id(content: str) -> str:
     return hashlib.md5(content.encode()).hexdigest()[:8]
 
 
+def scan_nan_in_raw(df: pd.DataFrame, detected_cols: Dict, use_raw_tilt: bool = True) -> Dict:
+    """
+    Scan the raw dataframe for NaN values in the columns relevant to
+    cumulative displacement calculation (tilt A/B or def A/B).
+    
+    Returns a structured report dict with:
+        - 'has_nan'                  : bool, True if any NaN found in relevant cols
+        - 'total_cells'              : int, total tilt/def cells scanned
+        - 'nan_cells'                : int, number of cells that are NaN
+        - 'nan_pct'                  : float, percentage of cells that are NaN
+        - 'affected_timestamps'      : list of Timestamp objects with at least one NaN
+        - 'nan_per_sensor'           : dict {sensor_num_1idx: nan_count}
+        - 'nan_per_timestamp'        : dict {Timestamp: nan_count}
+        - 'sensors_always_nan'       : list of sensor_num (fully dead channels)
+        - 'data_source'              : 'tilt' or 'def' (which columns were scanned)
+    
+    This scan is lightweight — just a boolean mask on selected columns.
+    """
+    report = {
+        'has_nan': False,
+        'total_cells': 0,
+        'nan_cells': 0,
+        'nan_pct': 0.0,
+        'affected_timestamps': [],
+        'nan_per_sensor': {},
+        'nan_per_timestamp': {},
+        'sensors_always_nan': [],
+        'data_source': 'tilt' if use_raw_tilt else 'def',
+    }
+    
+    # Pick the column set we'll actually use in processing
+    if use_raw_tilt and detected_cols.get('tilt_a') and detected_cols.get('tilt_b'):
+        cols_a = detected_cols['tilt_a']
+        cols_b = detected_cols['tilt_b']
+    elif detected_cols.get('def_a') and detected_cols.get('def_b'):
+        cols_a = detected_cols['def_a']
+        cols_b = detected_cols['def_b']
+        report['data_source'] = 'def'
+    else:
+        return report  # no usable columns
+    
+    num_sensors = detected_cols.get('num_sensors', 0)
+    ts_col = detected_cols.get('timestamp')
+    if num_sensors == 0 or ts_col is None or ts_col not in df.columns:
+        return report
+    
+    # Build a [num_rows x num_sensors] NaN mask combining A and B
+    # A cell is "bad" if either A or B is NaN for that (timestamp, sensor)
+    mask_rows = []
+    for i in range(num_sensors):
+        col_a = cols_a[i] if i < len(cols_a) else None
+        col_b = cols_b[i] if i < len(cols_b) else None
+        a_nan = df[col_a].isna() if col_a in df.columns else pd.Series([True]*len(df))
+        b_nan = df[col_b].isna() if col_b in df.columns else pd.Series([True]*len(df))
+        mask_rows.append((a_nan | b_nan).values)
+    
+    if not mask_rows:
+        return report
+    
+    nan_mask = np.column_stack(mask_rows)  # shape: (n_timestamps, n_sensors)
+    total_cells = nan_mask.size
+    nan_cells = int(nan_mask.sum())
+    
+    report['total_cells'] = total_cells
+    report['nan_cells'] = nan_cells
+    report['has_nan'] = nan_cells > 0
+    report['nan_pct'] = (nan_cells / total_cells * 100.0) if total_cells else 0.0
+    
+    if nan_cells == 0:
+        return report
+    
+    # Per-sensor counts
+    nan_per_sensor_arr = nan_mask.sum(axis=0)
+    report['nan_per_sensor'] = {
+        i + 1: int(nan_per_sensor_arr[i]) for i in range(num_sensors) if nan_per_sensor_arr[i] > 0
+    }
+    # Fully dead sensors (NaN in every timestamp)
+    report['sensors_always_nan'] = [
+        i + 1 for i in range(num_sensors) if nan_per_sensor_arr[i] == len(df)
+    ]
+    
+    # Per-timestamp counts & affected timestamp list
+    nan_per_ts_arr = nan_mask.sum(axis=1)
+    timestamps = df[ts_col].values
+    affected_idx = np.where(nan_per_ts_arr > 0)[0]
+    report['affected_timestamps'] = [pd.Timestamp(timestamps[i]) for i in affected_idx]
+    report['nan_per_timestamp'] = {
+        pd.Timestamp(timestamps[i]): int(nan_per_ts_arr[i]) for i in affected_idx
+    }
+    
+    return report
+
+
 # =============================================================================
 # DISPLACEMENT CALCULATIONS
 # =============================================================================
@@ -555,7 +656,13 @@ def calculate_cumulative_displacement(incremental_displacements: np.ndarray, fro
 
 
 def process_ipis_point(point: IPISPoint, use_raw_tilt: bool = True) -> pd.DataFrame:
-    """Process a single IPIS point to calculate cumulative displacements."""
+    """Process a single IPIS point to calculate cumulative displacements.
+    
+    Applies the NaN exclusion mode set on the IPISPoint before computing:
+        - 'keep'            : legacy behavior (NaN treated as 0 by nancumsum)
+        - 'exclude_rows'    : drop whole timestamps that contain any NaN tilt/def value
+        - 'exclude_sensors' : drop the specified sensor channels from the output
+    """
     df = point.raw_df
     detected_cols = point.detected_cols
     gauge_lengths = point.gauge_lengths
@@ -580,9 +687,33 @@ def process_ipis_point(point: IPISPoint, use_raw_tilt: bool = True) -> pd.DataFr
     for i in range(1, num_sensors):
         depths[i] = depths[i-1] + gauge_lengths[i-1]
     
+    # -------------------------------------------------------------------
+    # FEATURE 1 — NaN EXCLUSION: Row-level filter applied on raw df
+    # -------------------------------------------------------------------
+    # If mode is 'exclude_rows', drop timestamps that contain any NaN in the
+    # tilt/def columns we're about to use. This operates BEFORE processing,
+    # so base-reading indices remain valid only if the base row itself is
+    # clean (the sidebar UI warns the user if the base row has NaN).
+    working_df = df
+    if point.nan_exclusion_mode == 'exclude_rows':
+        if use_raw_tilt and detected_cols.get('tilt_a') and detected_cols.get('tilt_b'):
+            check_cols = detected_cols['tilt_a'] + detected_cols['tilt_b']
+        elif detected_cols.get('def_a') and detected_cols.get('def_b'):
+            check_cols = detected_cols['def_a'] + detected_cols['def_b']
+        else:
+            check_cols = []
+        if check_cols:
+            valid_mask = ~df[check_cols].isna().any(axis=1)
+            working_df = df[valid_mask].copy()
+    
+    # Sensor exclusion set (1-indexed → 0-indexed)
+    excluded_sensor_idxs = set()
+    if point.nan_exclusion_mode == 'exclude_sensors':
+        excluded_sensor_idxs = {s - 1 for s in point.excluded_sensors if 1 <= s <= num_sensors}
+    
     results = []
     
-    for idx, row in df.iterrows():
+    for idx, row in working_df.iterrows():
         timestamp = row[detected_cols['timestamp']]
         
         # Extract tilt data
@@ -607,6 +738,9 @@ def process_ipis_point(point: IPISPoint, use_raw_tilt: bool = True) -> pd.DataFr
             temps = np.full(num_sensors, np.nan)
         
         for i in range(num_sensors):
+            # Skip sensors excluded by user (sensor-level NaN exclusion)
+            if i in excluded_sensor_idxs:
+                continue
             results.append({
                 'point_id': point.point_id,
                 'point_name': point.name,
@@ -626,7 +760,14 @@ def process_ipis_point(point: IPISPoint, use_raw_tilt: bool = True) -> pd.DataFr
         return processed_df
     
     # Apply base reading correction
-    base_data = processed_df[processed_df['record_idx'] == base_reading_idx].copy()
+    # Note: if exclude_rows removed the base row, fall back to the first
+    # remaining timestamp so processing doesn't fail silently.
+    available_base_idxs = processed_df['record_idx'].unique()
+    effective_base_idx = base_reading_idx
+    if base_reading_idx not in available_base_idxs:
+        effective_base_idx = int(available_base_idxs[0])
+    
+    base_data = processed_df[processed_df['record_idx'] == effective_base_idx].copy()
     base_data = base_data.set_index('sensor_num')[['inc_disp_a', 'inc_disp_b']].rename(
         columns={'inc_disp_a': 'base_a', 'inc_disp_b': 'base_b'}
     )
@@ -636,22 +777,25 @@ def process_ipis_point(point: IPISPoint, use_raw_tilt: bool = True) -> pd.DataFr
     processed_df['inc_disp_b_corr'] = processed_df['inc_disp_b'] - processed_df['base_b']
     
     # Calculate cumulative displacement
-    cum_disp_a_list = []
-    cum_disp_b_list = []
+    # Initialize columns first, then fill per-timestamp to guarantee index alignment
+    processed_df['cum_disp_a'] = np.nan
+    processed_df['cum_disp_b'] = np.nan
     
     for timestamp in processed_df['timestamp'].unique():
         mask = processed_df['timestamp'] == timestamp
-        inc_a = processed_df.loc[mask, 'inc_disp_a_corr'].values
-        inc_b = processed_df.loc[mask, 'inc_disp_b_corr'].values
+        # Sort by depth so cumulative sum (from bottom up) is geometrically
+        # correct even after sensor exclusion leaves gaps in sensor_num.
+        ts_slice = processed_df.loc[mask].sort_values('depth')
+        inc_a = ts_slice['inc_disp_a_corr'].values
+        inc_b = ts_slice['inc_disp_b_corr'].values
         
         cum_a = calculate_cumulative_displacement(inc_a, from_bottom=True)
         cum_b = calculate_cumulative_displacement(inc_b, from_bottom=True)
         
-        cum_disp_a_list.extend(cum_a)
-        cum_disp_b_list.extend(cum_b)
+        # Write back using the sorted index to preserve depth-ordered alignment
+        processed_df.loc[ts_slice.index, 'cum_disp_a'] = cum_a
+        processed_df.loc[ts_slice.index, 'cum_disp_b'] = cum_b
     
-    processed_df['cum_disp_a'] = cum_disp_a_list
-    processed_df['cum_disp_b'] = cum_disp_b_list
     processed_df['cum_disp_resultant'] = np.sqrt(
         processed_df['cum_disp_a']**2 + processed_df['cum_disp_b']**2
     )
@@ -714,6 +858,16 @@ def create_profile_plot_single(processed_df: pd.DataFrame, selected_timestamps: 
     fig.add_vline(x=0, line_dash="dash", line_color="#64748b", line_width=1.5, row=1, col=1)
     fig.add_vline(x=0, line_dash="dash", line_color="#64748b", line_width=1.5, row=1, col=2)
     
+    # Adaptive bottom margin: with up to 12 timestamps the legend wraps to
+    # multiple rows, so we need more space underneath.
+    n_ts = len(selected_timestamps)
+    if n_ts <= 4:
+        bottom_margin, legend_y = 80, -0.12
+    elif n_ts <= 8:
+        bottom_margin, legend_y = 120, -0.18
+    else:  # 9–12
+        bottom_margin, legend_y = 160, -0.24
+    
     fig.update_layout(
         title=dict(
             text=f'<b>{point_name} - Cumulative Displacement Profile</b>',
@@ -721,14 +875,15 @@ def create_profile_plot_single(processed_df: pd.DataFrame, selected_timestamps: 
             x=0.5, xanchor='center', y=0.95
         ),
         legend=dict(
-            orientation='h', yanchor='top', y=-0.12,
+            orientation='h', yanchor='top', y=legend_y,
             xanchor='center', x=0.5,
             title=dict(text='<b>Timestamp:</b> ', font=dict(size=10)),
             bgcolor='#f8fafc', bordercolor='#cbd5e1', borderwidth=1,
             font=dict(size=9, color='#1e293b')
         ),
         plot_bgcolor='#ffffff', paper_bgcolor='#ffffff',
-        height=600, margin=dict(t=60, b=80, l=70, r=50)
+        height=600 + (bottom_margin - 80),  # grow canvas to keep plot area intact
+        margin=dict(t=60, b=bottom_margin, l=70, r=50)
     )
     
     for annotation in fig['layout']['annotations']:
@@ -1015,6 +1170,9 @@ def add_ipis_point(file_content: str, filename: str) -> Tuple[bool, str]:
             color=CHART_COLORS[color_idx]
         )
         
+        # Scan for NaN values in relevant columns (default: scan tilt columns)
+        point.nan_report = scan_nan_in_raw(df, detected_cols, use_raw_tilt=True)
+        
         # Store point
         st.session_state.ipis_points[point_id] = point
         
@@ -1037,6 +1195,9 @@ def remove_ipis_point(point_id: str):
 def process_all_points(use_raw_tilt: bool = True):
     """Process all IPIS points."""
     for point_id, point in st.session_state.ipis_points.items():
+        # Refresh NaN report against the currently-active data source
+        # (tilt vs. pre-calc deflection use different columns)
+        point.nan_report = scan_nan_in_raw(point.raw_df, point.detected_cols, use_raw_tilt=use_raw_tilt)
         processed_df = process_ipis_point(point, use_raw_tilt)
         st.session_state.processed_data[point_id] = processed_df
         point.processed_df = processed_df
@@ -1279,7 +1440,132 @@ def main():
                         key=f"base_{point_id}",
                         label_visibility="collapsed"
                     )
-                    point.base_reading_idx = base_options.index(selected_base)
+                    new_base_idx = base_options.index(selected_base)
+                    if new_base_idx != point.base_reading_idx:
+                        point.base_reading_idx = new_base_idx
+                        if point_id in st.session_state.processed_data:
+                            del st.session_state.processed_data[point_id]
+                    
+                    # =============================================
+                    # FEATURE 1 — NaN QUALITY CHECK & EXCLUSION
+                    # =============================================
+                    st.divider()
+                    st.markdown("**🔍 Data Quality — NaN Check**")
+                    
+                    rep = point.nan_report or {}
+                    if not rep.get('has_nan', False):
+                        st.success(
+                            f"✅ No NaN detected in "
+                            f"{'tilt' if rep.get('data_source') == 'tilt' else 'deflection'} data "
+                            f"({rep.get('total_cells', 0):,} cells scanned)."
+                        )
+                    else:
+                        # Summary metrics
+                        total = rep.get('total_cells', 0)
+                        n_nan = rep.get('nan_cells', 0)
+                        n_ts_affected = len(rep.get('affected_timestamps', []))
+                        n_ts_total = len(point.raw_df)
+                        sensors_bad = rep.get('nan_per_sensor', {})
+                        sensors_dead = rep.get('sensors_always_nan', [])
+                        
+                        st.warning(
+                            f"⚠️ NaN detected: **{n_nan:,} / {total:,} cells** "
+                            f"({rep.get('nan_pct', 0.0):.2f}%)  \n"
+                            f"• Affected timestamps: **{n_ts_affected}** / {n_ts_total}  \n"
+                            f"• Sensors with NaN: **{len(sensors_bad)}** "
+                            f"{'(' + ', '.join(f'S{s}' for s in sorted(sensors_bad.keys())) + ')' if sensors_bad else ''}"
+                        )
+                        
+                        if sensors_dead:
+                            st.error(
+                                f"🔴 Fully dead sensors (NaN in every timestamp): "
+                                f"{', '.join(f'S{s}' for s in sensors_dead)}"
+                            )
+                        
+                        # Check if selected base reading itself is NaN-contaminated
+                        base_ts = pd.Timestamp(timestamps[point.base_reading_idx])
+                        nan_per_ts = rep.get('nan_per_timestamp', {})
+                        if base_ts in nan_per_ts:
+                            st.error(
+                                f"🚨 **Base reading ({base_ts.strftime('%Y-%m-%d %H:%M')}) "
+                                f"contains {nan_per_ts[base_ts]} NaN sensor(s).** "
+                                f"This will corrupt base correction. "
+                                f"Pick a clean timestamp or enable exclusion below."
+                            )
+                        
+                        # Expandable detailed breakdown
+                        with st.expander("📋 View affected timestamps / sensors", expanded=False):
+                            if sensors_bad:
+                                st.caption("**NaN count per sensor:**")
+                                sensor_df = pd.DataFrame(
+                                    [{'Sensor': f'S{s}', 'NaN Count': c,
+                                      'Always NaN': '✓' if s in sensors_dead else ''}
+                                     for s, c in sorted(sensors_bad.items())]
+                                )
+                                st.dataframe(sensor_df, use_container_width=True, hide_index=True)
+                            
+                            affected_ts = rep.get('affected_timestamps', [])
+                            if affected_ts:
+                                st.caption(f"**Affected timestamps ({len(affected_ts)}):**")
+                                # Show first 20 to keep UI responsive
+                                preview = affected_ts[:20]
+                                ts_df = pd.DataFrame([
+                                    {'Timestamp': pd.Timestamp(ts).strftime('%Y-%m-%d %H:%M'),
+                                     'NaN Sensors': nan_per_ts.get(pd.Timestamp(ts), 0)}
+                                    for ts in preview
+                                ])
+                                st.dataframe(ts_df, use_container_width=True, hide_index=True)
+                                if len(affected_ts) > 20:
+                                    st.caption(f"... and {len(affected_ts) - 20} more.")
+                        
+                        # Exclusion mode selector
+                        st.markdown("**Exclusion mode:**")
+                        mode_options = {
+                            'keep': '① Keep all data (NaN treated as 0 by nancumsum)',
+                            'exclude_rows': '② Exclude timestamps with any NaN (recommended)',
+                            'exclude_sensors': '③ Exclude specific sensors (advanced)',
+                        }
+                        current_mode = point.nan_exclusion_mode
+                        chosen = st.radio(
+                            "NaN exclusion mode",
+                            options=list(mode_options.keys()),
+                            format_func=lambda k: mode_options[k],
+                            index=list(mode_options.keys()).index(current_mode),
+                            key=f"nan_mode_{point_id}",
+                            label_visibility="collapsed"
+                        )
+                        if chosen != current_mode:
+                            point.nan_exclusion_mode = chosen
+                            if point_id in st.session_state.processed_data:
+                                del st.session_state.processed_data[point_id]
+                        
+                        if chosen == 'exclude_rows':
+                            st.caption(
+                                f"→ Will drop **{n_ts_affected}** timestamp(s) before processing. "
+                                f"Remaining: {n_ts_total - n_ts_affected} scans."
+                            )
+                        elif chosen == 'exclude_sensors':
+                            st.caption(
+                                "⚠️ Sensor exclusion removes nodes from the cumulative sum. "
+                                "The remaining geometry is preserved but excluded nodes contribute zero. "
+                                "Review the profile plot carefully."
+                            )
+                            sensor_choices = sorted(sensors_bad.keys())
+                            # Preselect fully-dead sensors by default when entering this mode
+                            default_sel = point.excluded_sensors if point.excluded_sensors else sensors_dead
+                            chosen_sensors = st.multiselect(
+                                "Sensors to exclude",
+                                options=sensor_choices,
+                                default=[s for s in default_sel if s in sensor_choices],
+                                format_func=lambda s: f"S{s} ({sensors_bad.get(s, 0)} NaN)",
+                                key=f"nan_excl_sensors_{point_id}",
+                            )
+                            if set(chosen_sensors) != set(point.excluded_sensors):
+                                point.excluded_sensors = chosen_sensors
+                                if point_id in st.session_state.processed_data:
+                                    del st.session_state.processed_data[point_id]
+                    
+                    st.divider()
                     
                     # Remove button
                     if st.button("🗑️ Remove", key=f"del_{point_id}", type="secondary"):
@@ -1385,8 +1671,9 @@ def main():
                 options=available_timestamps,
                 default=[available_timestamps[0], available_timestamps[-1]] if len(available_timestamps) > 1 else available_timestamps[:1],
                 format_func=lambda x: pd.Timestamp(x).strftime('%Y-%m-%d %H:%M'),
-                max_selections=8,
-                key="profile_timestamps"
+                max_selections=12,
+                key="profile_timestamps",
+                help="Select up to 12 timestamps to overlay on the profile plot."
             )
         with col2:
             if st.button("Latest", key="latest_btn"):
